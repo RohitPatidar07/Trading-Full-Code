@@ -1,0 +1,29 @@
+Created At: 2026-09-09T21:23:23+05:30
+Completed At: 2026-09-09T21:23:23+05:30
+File Path: `file:///Users/unknown1/Desktop/Trading_Main/Trading_App-main/src/screens/tabs/DashboardScreen.js`
+Total Lines: 939
+Total Bytes: 35686
+Showing lines 105 to 125
+The following code has been modified to include a line number before every line, in the format: <line_number>: <original_line>. Please note that any changes targeting the original code should remove the line number, colon, and leading space.
+105:     const scale = Math.min(Math.max((screenWidth || 390) / 390, 0.88), 1.25);
+106: 
+107:     const responsiveStyles = {
+108:         symbolNameSize: Math.round(18 * scale * 10) / 10,
+109:         arrowSize: Math.round(14 * scale),
+110:         dateTextSize: Math.round(14 * scale * 10) / 10,
+111:         statsTextSize: Math.round(14.5 * scale * 10) / 10,
+112:         priceBoxFontSize: Math.round(15 * scale * 10) / 10,
+113:         priceBoxWidth: Math.round(98 * scale),
+114:         stackedColMinWidth: Math.round(98 * scale),
+115:         priceBoxPaddingV: Math.round(6 * scale),
+116:         priceBoxPaddingH: Math.round(4 * scale),
+117:         colGap: Math.round(8 * scale),
+118:         statsRowMarginTop: Math.round(5 * scale),
+119:         cardWrapperPadding: Math.round(10 * scale),
+120:     };
+121: 
+122:     return (
+123:         <TouchableOpacity
+124:             activeOpacity={0.7}
+125:             onPress={() => navigation.navigate('OrderDetail', {
+The above content does NOT show the entire file contents. If you need to view any lines of the file which were not shown to complete your task, call this tool again to view those lines.

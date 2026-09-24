@@ -1,0 +1,19 @@
+﻿
+Builds for @yash_s_s/VTRKM-v2:
+
+ID                       3573a838-74c6-4d21-a80f-4b7849fd64bd
+Platform                 Android
+Status                   finished
+Profile                  preview
+Distribution             store
+SDK Version              54.0.0
+Version                  1.0.0
+Version code             1
+Commit                   a93faf2c5be548474be941333ca4c2082fdc3de6
+Logs                     https://expo.dev/accounts/yash_s_s/projects/VTRKM-v2/builds/3573a838-74c6-4d21-a80f-4b7849fd64bd
+Application Archive URL  https://expo.dev/artifacts/eas/7APVRoprBh69St34153xsM.apk
+Build Artifacts URL      null
+Fingerprint              ed8e4cd1e10b9bc2accb505647f720e4aaaee5e7
+Started at               23/2/2026, 4:27:58 pm
+Finished at              23/2/2026, 4:39:34 pm
+Started by               yash_s_s
