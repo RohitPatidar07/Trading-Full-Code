@@ -97,6 +97,10 @@ const autoCloseTrade = async (trade, exitPrice, reason) => {
         
         console.log(`[TargetSL] ✅ Trade #${trade.id} auto-closed | Exit: ${exitPrice} | Reason: ${reason}`);
     } catch (err) {
+        if (err.message === 'TRADE_CLOSE_IN_PROGRESS' || err.message === 'TRADE_ALREADY_CLOSED' || err.message === 'Trade is already closed') {
+            console.log(`[TargetSL] ℹ️ Trade #${trade.id} was already closing or closed concurrently. Skipped cleanly.`);
+            return;
+        }
         console.error(`[TargetSL] Error auto-closing trade #${trade.id}:`, err.message);
     }
 };

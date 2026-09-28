@@ -482,6 +482,15 @@ const KiteDashboard = () => {
                     <input type="text" value={tokenInput} onChange={e => setTokenInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSetToken()} placeholder="Access token..." className="flex-1 bg-white/[0.03] border border-white/5 rounded-lg px-4 py-2.5 text-sm text-white placeholder-slate-700 focus:outline-none focus:border-green-500/30 transition-all font-mono" />
                     <button onClick={handleSetToken} disabled={settingToken || !tokenInput.trim()} className="btn-primary btn-success-gradient shadow-md" style={{ borderRadius: '8px', minWidth: 'auto' }}>{settingToken ? '...' : 'Go'}</button>
                 </div>
+                <div className="mt-5 pt-4 border-t border-white/10">
+                    <button 
+                        type="button"
+                        onClick={() => navigate('/market-data')}
+                        className="text-xs font-semibold text-blue-400 hover:text-blue-300 transition-colors flex items-center justify-center gap-1.5 mx-auto"
+                    >
+                        <span>🌐 View AllTick Global Quotes (Crypto / Forex / Comex)</span> &rarr;
+                    </button>
+                </div>
                 {error && <div className="mt-4 bg-red-500/10 border border-red-500/20 rounded-lg p-3 text-red-400 text-xs font-bold">{error}</div>}
             </div>
         </div>
@@ -506,6 +515,9 @@ const KiteDashboard = () => {
                         </p>
                     </div>
                     <div className="flex items-center gap-2 sm:gap-3 shrink-0">
+                        <button type="button" onClick={() => navigate('/market-data')} className="flex items-center gap-1.5 bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 border border-indigo-500/30 px-2 sm:px-3 py-1.5 rounded-lg text-xs font-semibold transition-all">
+                            <span>🌐 AllTick Feed</span>
+                        </button>
                         <button type="button" onClick={() => navigate('/contract-management')} className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white px-2 sm:px-3 py-1.5 rounded-lg text-xs font-semibold">
                             <Settings className="w-4 h-4" /> <span className="hidden sm:inline">Contracts</span>
                         </button>

@@ -85,22 +85,33 @@ const syncPaperPosition = async (userId, symbol, connection = db) => {
  * Service to handle core Trade operations like closing and auto-squaring off.
  */
 class TradeService {
+    constructor() {
+        // Concurrency lock registry to prevent simultaneous execution for the same trade ID
+        this.closingLocks = new Set();
+    }
 
     /**
      * Closes a single trade by its ID.
      * Reusable for manual close, auto-close, and expiry square-off.
      */
     async closeTrade(tradeId, exitPrice = null, requesterId = 0, providedPnl = null, remark = null, closeIp = null) {
-        const connection = await db.getConnection();
+        // Tier 1 Concurrency Guard: Fast rejection if trade closure is already in-flight
+        if (this.closingLocks.has(tradeId)) {
+            throw new Error('TRADE_CLOSE_IN_PROGRESS');
+        }
+        this.closingLocks.add(tradeId);
+
+        let connection;
         try {
+            connection = await db.getConnection();
             await connection.beginTransaction();
 
-            // 1. Fetch trade and client settings
+            // 1. Fetch trade and client settings with Tier 2 Pessimistic Row Lock (FOR UPDATE)
             const [tradeRows] = await connection.execute(
                 `SELECT t.*, cs.config_json, cs.broker_id 
                  FROM trades t
                  JOIN client_settings cs ON t.user_id = cs.user_id
-                 WHERE t.id = ?`,
+                 WHERE t.id = ? FOR UPDATE`,
                 [tradeId]
             );
 
@@ -113,10 +124,13 @@ class TradeService {
 
             // 2. Handle Pending Orders
             if (trade.is_pending == 1) {
-                await connection.execute(
-                    'UPDATE trades SET status = "CANCELLED", exit_price = entry_price, exit_time = NOW(), pnl = 0 WHERE id = ?',
+                const [cancelResult] = await connection.execute(
+                    'UPDATE trades SET status = "CANCELLED", exit_price = entry_price, exit_time = NOW(), pnl = 0 WHERE id = ? AND status IN ("OPEN", "HOLD")',
                     [tradeId]
                 );
+                if (cancelResult.affectedRows === 0) {
+                    throw new Error('TRADE_ALREADY_CLOSED');
+                }
                 await connection.execute(
                     'UPDATE users SET balance = balance + ? WHERE id = ?',
                     [marginToRelease, trade.user_id]
@@ -472,10 +486,15 @@ class TradeService {
                 }
             }
 
-            await connection.execute(
-                'UPDATE trades SET status = "CLOSED", exit_price = ?, exit_time = NOW(), pnl = ?, brokerage = ?, swap = ?, closed_by = ?, close_remark = ?, close_ip = ? WHERE id = ?',
+            // Tier 3 Atomic Conditional State Transition
+            const [updateResult] = await connection.execute(
+                'UPDATE trades SET status = "CLOSED", exit_price = ?, exit_time = NOW(), pnl = ?, brokerage = ?, swap = ?, closed_by = ?, close_remark = ?, close_ip = ? WHERE id = ? AND status IN ("OPEN", "HOLD")',
                 [finalExitPrice, pnl, brokerage, swap, closedByValue, remark, closeIp, tradeId]
             );
+
+            if (updateResult.affectedRows === 0) {
+                throw new Error('TRADE_ALREADY_CLOSED');
+            }
 
             await connection.execute(
                 'UPDATE users SET balance = balance + ? WHERE id = ?',
@@ -532,10 +551,15 @@ class TradeService {
 
             return { success: true, pnl, brokerage, swap, balanceChange };
         } catch (err) {
-            await connection.rollback();
+            if (connection) {
+                try { await connection.rollback(); } catch (_) {}
+            }
             throw err;
         } finally {
-            connection.release();
+            this.closingLocks.delete(tradeId);
+            if (connection) {
+                try { connection.release(); } catch (_) {}
+            }
         }
     }
 

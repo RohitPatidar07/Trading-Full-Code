@@ -749,6 +749,24 @@ export const getOptionsExpiries = async (symbol) => {
     return response.data;
 };
 
+// ─── ALLTICK INTEGRATION (Agent #2) ───────────────────
+export const getAllTickHealth = async (ping = false) => {
+    const response = await api.get('/alltick/health', {
+        params: ping ? { ping: 'true' } : {}
+    });
+    return response.data;
+};
+
+export const reconnectAllTick = async () => {
+    const response = await api.post('/alltick/reconnect');
+    return response.data;
+};
+
+export const getAllTickSymbols = async () => {
+    const response = await api.get('/alltick/symbols');
+    return response.data;
+};
+
 export const getKiteStatus = async () => {
     const response = await api.get('/kite/status');
     return response.data;
@@ -951,6 +969,12 @@ export const runResetID = async (data = {}) => {
 
 export const getResetIDConfig = async () => {
     const response = await api.get('/weekly-settlements/reset-id-config');
+    return response.data;
+};
+
+// ─── ORDER FLOW TRACER ────────────────────────────────────────────────────────
+export const traceTrade = async (tradeId) => {
+    const response = await api.get(`/trace/trade/${tradeId}`);
     return response.data;
 };
 

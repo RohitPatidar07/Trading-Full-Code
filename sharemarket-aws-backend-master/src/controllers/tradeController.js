@@ -2484,7 +2484,10 @@ const closeTrade = async (req, res) => {
 
         const trade = trades[0];
         if (trade.status !== 'OPEN' && trade.status !== 'HOLD') {
-            return res.status(400).json({ message: 'Trade is already closed or inactive' });
+            return res.status(409).json({
+                success: false,
+                message: 'Trade closure is already in progress or trade has already been closed.'
+            });
         }
 
         // ─── VALIDATIONS (Min Time / Scalping SL) ─────────────────────────
@@ -2575,7 +2578,13 @@ const closeTrade = async (req, res) => {
             console.error('[closeTrade] Socket emit error:', socketErr.message);
         }
     } catch (err) {
-        console.error('❌ Close Trade Error:', err);
+        console.error('❌ Close Trade Error:', err.message);
+        if (err.message === 'TRADE_CLOSE_IN_PROGRESS' || err.message === 'TRADE_ALREADY_CLOSED' || err.message === 'Trade is already closed') {
+            return res.status(409).json({
+                success: false,
+                message: 'Trade closure is already in progress or trade has already been closed.'
+            });
+        }
         res.status(500).json({ message: 'Server Error', error: err.message });
     }
 };
