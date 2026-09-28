@@ -25,6 +25,10 @@ const createFund = async (req, res) => {
 
         const currentBalance = parseFloat(userRows[0].balance || 0);
         const amountNum = parseFloat(amount);
+        if (isNaN(amountNum) || !isFinite(amountNum) || amountNum <= 0) {
+            await connection.rollback();
+            return res.status(400).json({ message: 'Amount must be a positive number greater than 0' });
+        }
         
         if (type === 'WITHDRAW') {
             const [trades] = await connection.execute('SELECT * FROM trades WHERE user_id = ? AND status = "OPEN"', [userId]);

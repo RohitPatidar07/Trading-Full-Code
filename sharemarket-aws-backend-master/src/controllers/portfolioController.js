@@ -23,29 +23,136 @@ const getLedger = async (req, res) => {
 const internalTransfer = async (req, res) => {
     const { toUserId, amount, notes } = req.body;
     const fromUserId = req.user.id;
+
+    // ── 1. Amount Validation (Strictly Positive & Valid Number) ──────────────
+    if (amount === undefined || amount === null || amount === '') {
+        return res.status(400).json({ message: 'Transfer amount is required' });
+    }
+
+    const transferAmount = Number(amount);
+    if (isNaN(transferAmount) || !isFinite(transferAmount) || transferAmount <= 0) {
+        return res.status(400).json({ message: 'Transfer amount must be a positive number greater than 0' });
+    }
+
+    // Limit to 2 decimal places to avoid floating point precision manipulation
+    const cleanAmount = Math.round(transferAmount * 100) / 100;
+    if (cleanAmount <= 0) {
+        return res.status(400).json({ message: 'Transfer amount must be at least ₹0.01' });
+    }
+
+    // ── 2. Recipient Validation ──────────────────────────────────────────────
+    const targetUserId = parseInt(toUserId, 10);
+    if (!targetUserId || isNaN(targetUserId)) {
+        return res.status(400).json({ message: 'Valid recipient user ID is required' });
+    }
+
+    if (parseInt(fromUserId, 10) === targetUserId) {
+        return res.status(400).json({ message: 'Cannot transfer funds to yourself' });
+    }
+
     const connection = await db.getConnection();
 
     try {
         await connection.beginTransaction();
 
-        // Check balance of sender if not SUPERADMIN
-        if (req.user.role !== 'SUPERADMIN') {
-            const [sender] = await connection.execute('SELECT balance FROM users WHERE id = ?', [fromUserId]);
-            if (sender[0].balance < amount) throw new Error('Insufficient balance');
+        // ── 3. Lock & Verify Sender ──────────────────────────────────────────
+        const [senderRows] = await connection.execute(
+            'SELECT id, balance, status, role FROM users WHERE id = ? FOR UPDATE',
+            [fromUserId]
+        );
+        if (!senderRows.length) {
+            throw new Error('Sender user not found');
+        }
+        if (senderRows[0].status !== 'Active') {
+            throw new Error('Sender account is not active');
         }
 
-        // Update balances
-        await connection.execute('UPDATE users SET balance = balance - ? WHERE id = ?', [amount, fromUserId]);
-        await connection.execute('UPDATE users SET balance = balance + ? WHERE id = ?', [amount, toUserId]);
+        const senderBalance = parseFloat(senderRows[0].balance || 0);
 
-        // Log transfer
+        // ── 4. Verify Withdrawable Balance & Margins ────────────────────────
+        if (req.user.role !== 'SUPERADMIN') {
+            const [trades] = await connection.execute(
+                'SELECT * FROM trades WHERE user_id = ? AND status = "OPEN"',
+                [fromUserId]
+            );
+            const [settings] = await connection.execute(
+                'SELECT config_json FROM client_settings WHERE user_id = ?',
+                [fromUserId]
+            );
+            const clientConfig = settings.length > 0 ? JSON.parse(settings[0].config_json || '{}') : {};
+
+            const blockedMargin = MarginUtils.calculateTotalRequiredHoldingMargin(trades, clientConfig);
+            const withdrawableBalance = senderBalance - blockedMargin;
+
+            if (cleanAmount > withdrawableBalance) {
+                throw new Error(
+                    `Insufficient withdrawable balance. Available: ₹${Math.max(0, withdrawableBalance).toFixed(2)} (Holding Margin: ₹${blockedMargin.toFixed(2)})`
+                );
+            }
+        }
+
+        // ── 5. Lock & Verify Recipient ───────────────────────────────────────
+        const [recipientRows] = await connection.execute(
+            'SELECT id, balance, status FROM users WHERE id = ? FOR UPDATE',
+            [targetUserId]
+        );
+        if (!recipientRows.length) {
+            throw new Error(`Recipient user ID ${targetUserId} does not exist`);
+        }
+        if (recipientRows[0].status !== 'Active') {
+            throw new Error('Recipient account is not active');
+        }
+
+        const recipientBalance = parseFloat(recipientRows[0].balance || 0);
+        const newSenderBalance = senderBalance - cleanAmount;
+        const newRecipientBalance = recipientBalance + cleanAmount;
+
+        // ── 6. Update User Balances ──────────────────────────────────────────
         await connection.execute(
-            'INSERT INTO internal_transfers (from_user_id, to_user_id, amount, notes) VALUES (?, ?, ?, ?)',
-            [fromUserId, toUserId, amount, notes]
+            'UPDATE users SET balance = balance - ? WHERE id = ?',
+            [cleanAmount, fromUserId]
+        );
+        await connection.execute(
+            'UPDATE users SET balance = balance + ? WHERE id = ?',
+            [cleanAmount, targetUserId]
+        );
+
+        // ── 7. Insert Audit Record (internal_transfers) ──────────────────────
+        await connection.execute(
+            'INSERT INTO internal_transfers (from_user_id, to_user_id, amount) VALUES (?, ?, ?)',
+            [fromUserId, targetUserId, cleanAmount]
+        );
+
+        // ── 8. Double-Entry Ledger Tracking ─────────────────────────────────
+        const transferNote = notes ? String(notes).trim() : '';
+        await connection.execute(
+            'INSERT INTO ledger (user_id, amount, type, balance_before, balance_after, remarks) VALUES (?, ?, ?, ?, ?, ?)',
+            [fromUserId, cleanAmount, 'WITHDRAW', senderBalance, newSenderBalance, `Internal transfer to user #${targetUserId}${transferNote ? ': ' + transferNote : ''}`]
+        );
+        await connection.execute(
+            'INSERT INTO ledger (user_id, amount, type, balance_before, balance_after, remarks) VALUES (?, ?, ?, ?, ?, ?)',
+            [targetUserId, cleanAmount, 'DEPOSIT', recipientBalance, newRecipientBalance, `Internal transfer from user #${fromUserId}${transferNote ? ': ' + transferNote : ''}`]
         );
 
         await connection.commit();
-        res.json({ message: 'Transfer successful' });
+
+        // Optional cache invalidation
+        try {
+            const { invalidateCache } = require('../utils/cacheManager');
+            await invalidateCache(`users_${fromUserId}_all`);
+            await invalidateCache(`users_${targetUserId}_all`);
+        } catch (cErr) {}
+
+        res.json({
+            success: true,
+            message: `Transfer of ₹${cleanAmount.toFixed(2)} completed successfully`,
+            transfer: {
+                fromUserId,
+                toUserId: targetUserId,
+                amount: cleanAmount,
+                newBalance: newSenderBalance
+            }
+        });
     } catch (err) {
         await connection.rollback();
         res.status(400).json({ message: err.message });
