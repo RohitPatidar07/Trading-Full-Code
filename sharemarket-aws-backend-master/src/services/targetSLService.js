@@ -43,6 +43,7 @@ const monitorTargetSL = async () => {
                     }
                 }
 
+<<<<<<< HEAD
                 // BUG 4 FIX (Issue B): STRICT PRICE GUARD
                 // If live price is not available, SKIP evaluation. NEVER fallback to entry_price!
                 if (!livePrice || livePrice <= 0) {
@@ -52,6 +53,15 @@ const monitorTargetSL = async () => {
                 const currentPrice = livePrice;
                 const targetPrice = trade.target_price !== null ? parseFloat(trade.target_price) : null;
                 const stopLossPrice = trade.stop_loss !== null ? parseFloat(trade.stop_loss) : null;
+=======
+                let currentPrice = (livePrice !== null && !isNaN(livePrice) && parseFloat(livePrice) > 0) ? parseFloat(livePrice) : null;
+
+                // 🛑 CRITICAL SAFETY: Never evaluate Target/Stop-Loss on entry_price or missing price.
+                // Wait for a valid live market tick to avoid false executions.
+                if (currentPrice === null) {
+                    continue;
+                }
+>>>>>>> f567a0d87c77b0e9f9bd8d20c5e5793c24d93b6c
 
                 // Check TARGET HIT (Profit scenario)
                 if (targetPrice !== null && targetPrice > 0) {
@@ -110,6 +120,10 @@ const autoCloseTrade = async (trade, exitPrice, reason) => {
         
         console.log(`[TargetSL] ✅ Trade #${trade.id} auto-closed | Exit: ${exitPrice} | Reason: ${reason}`);
     } catch (err) {
+        if (err.message === 'TRADE_CLOSE_IN_PROGRESS' || err.message === 'TRADE_ALREADY_CLOSED' || err.message === 'Trade is already closed') {
+            console.log(`[TargetSL] ℹ️ Trade #${trade.id} was already closing or closed concurrently. Skipped cleanly.`);
+            return;
+        }
         console.error(`[TargetSL] Error auto-closing trade #${trade.id}:`, err.message);
     }
 };

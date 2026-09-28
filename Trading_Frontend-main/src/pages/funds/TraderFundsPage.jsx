@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Trash2, SquarePen, X, Download, Loader2, Eye } from 'lucide-react';
+import { Trash2, SquarePen, X, Download, Loader2, Eye, ArrowLeftRight } from 'lucide-react';
 import * as api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { useBrokerPermissions } from '../../hooks/useBrokerPermissions';
+import TransferFundModal from '../../components/TransferFundModal';
 
 const formatDate = (dateString) => {
     if (!dateString) return '—';
@@ -44,6 +45,14 @@ const TraderFundsPage = ({ onNavigate, onEditFund, onCreateFund }) => {
     const [downloading, setDownloading] = useState(false);
     const [deleteModal, setDeleteModal] = useState({ show: false, fund: null });
     const [deleting, setDeleting] = useState(false);
+    const [showTransferModal, setShowTransferModal] = useState(false);
+
+    // Internal Transfer Modal State
+    const [transferModal, setTransferModal] = useState(false);
+    const [transferData, setTransferData] = useState({ toUserId: '', amount: '', notes: '' });
+    const [transferLoading, setTransferLoading] = useState(false);
+    const [transferError, setTransferError] = useState('');
+    const [transferSuccess, setTransferSuccess] = useState('');
 
     // Pagination
     const PAGE_SIZE = 15;
@@ -193,6 +202,33 @@ const TraderFundsPage = ({ onNavigate, onEditFund, onCreateFund }) => {
         return pages;
     };
 
+    const handleInternalTransferSubmit = async (e) => {
+        e.preventDefault();
+        setTransferError('');
+        setTransferSuccess('');
+
+        if (!transferData.toUserId) {
+            setTransferError('Please select a recipient user');
+            return;
+        }
+
+        setTransferLoading(true);
+        try {
+            const res = await api.internalTransfer(transferData);
+            setTransferSuccess(res.message || 'Transfer completed successfully!');
+            setTransferData({ toUserId: '', amount: '', notes: '' });
+            fetchFunds();
+            setTimeout(() => {
+                setTransferModal(false);
+                setTransferSuccess('');
+            }, 1800);
+        } catch (err) {
+            setTransferError(err.response?.data?.message || err.message || 'Transfer failed');
+        } finally {
+            setTransferLoading(false);
+        }
+    };
+
     return (
         <div className="flex flex-col bg-[#1a2035] space-y-4 md:space-y-8 w-full">
 
@@ -244,12 +280,20 @@ const TraderFundsPage = ({ onNavigate, onEditFund, onCreateFund }) => {
                     </div>
                 </div>
 
-                <div>
+                <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
                     {!user?.isSubBroker && (user?.role !== 'BROKER' || permissions.payinAllowed === 'Yes' || permissions.payoutAllowed === 'Yes') && (
                         <button onClick={onCreateFund}
-                            className="w-full md:w-auto text-white font-bold py-2.5 px-8 rounded uppercase tracking-wide text-xs transition-all shadow-[0_4px_10px_rgba(76,175,80,0.3)] hover:shadow-[0_4px_20px_rgba(76,175,80,0.5)] active:scale-95"
+                            className="w-full sm:w-auto text-white font-bold py-2.5 px-8 rounded uppercase tracking-wide text-xs transition-all shadow-[0_4px_10px_rgba(76,175,80,0.3)] hover:shadow-[0_4px_20px_rgba(76,175,80,0.5)] active:scale-95"
                             style={{ background: 'linear-gradient(60deg, #288c6c, #4ea752)' }}>CREATE NEW FUND</button>
                     )}
+                    <button
+                        onClick={() => setShowTransferModal(true)}
+                        className="w-full sm:w-auto text-white font-bold py-2.5 px-6 rounded uppercase tracking-wide text-xs transition-all shadow-[0_4px_10px_rgba(30,136,229,0.3)] hover:shadow-[0_4px_20px_rgba(30,136,229,0.5)] active:scale-95 flex items-center justify-center gap-2"
+                        style={{ background: 'linear-gradient(60deg, #1e88e5, #42a5f5)' }}
+                    >
+                        <ArrowLeftRight className="w-4 h-4" />
+                        <span>TRANSFER FUNDS</span>
+                    </button>
                 </div>
 
                 {/* Results Table */}
@@ -414,6 +458,15 @@ const TraderFundsPage = ({ onNavigate, onEditFund, onCreateFund }) => {
                     </div>
                 </div>
             )}
+
+            {/* Internal Fund Transfer Modal */}
+            <TransferFundModal
+                isOpen={showTransferModal}
+                onClose={() => setShowTransferModal(false)}
+                onSuccess={() => fetchFunds()}
+                currentUser={user}
+                allUsers={allUsers}
+            />
         </div>
     );
 };

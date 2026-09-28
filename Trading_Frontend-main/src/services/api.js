@@ -177,9 +177,25 @@ export const deleteFund = async (id) => {
     return response.data;
 };
 
+
 // ─── MARGIN ──────────────────────────────────────────
 export const getNetHoldingMargin = async (clientId) => {
     const response = await api.get(`/portfolio/${clientId}/margin`);
+    return response.data;
+};
+
+// ─── INTERNAL DATA & FUND TRANSFER ──────────────────
+export const internalTransfer = async (data) => {
+    const response = await api.post('/portfolio/transfer', {
+        toUserId: parseInt(data.toUserId, 10),
+        amount: parseFloat(data.amount),
+        notes: data.notes || ''
+    });
+    return response.data;
+};
+
+export const getInternalTransfers = async (params = {}) => {
+    const response = await api.get('/portfolio/ledger', { params });
     return response.data;
 };
 
@@ -749,6 +765,24 @@ export const getOptionsExpiries = async (symbol) => {
     return response.data;
 };
 
+// ─── ALLTICK INTEGRATION (Agent #2) ───────────────────
+export const getAllTickHealth = async (ping = false) => {
+    const response = await api.get('/alltick/health', {
+        params: ping ? { ping: 'true' } : {}
+    });
+    return response.data;
+};
+
+export const reconnectAllTick = async () => {
+    const response = await api.post('/alltick/reconnect');
+    return response.data;
+};
+
+export const getAllTickSymbols = async () => {
+    const response = await api.get('/alltick/symbols');
+    return response.data;
+};
+
 export const getKiteStatus = async () => {
     const response = await api.get('/kite/status');
     return response.data;
@@ -959,8 +993,8 @@ export const squareOffAllClientPositions = async (userId) => {
     return response.data;
 };
 
-export const updateUserStatus = async (userId, status) => {
-    const response = await api.put(`/users/${userId}/status`, { status });
+// ─── ORDER FLOW TRACER ────────────────────────────────────────────────────────
+export const traceTrade = async (tradeId) => {
+    const response = await api.get(`/trace/trade/${tradeId}`);
     return response.data;
 };
-

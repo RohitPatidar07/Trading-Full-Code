@@ -25,6 +25,10 @@ const createFund = async (req, res) => {
 
         const currentBalance = parseFloat(userRows[0].balance || 0);
         const amountNum = parseFloat(amount);
+        if (isNaN(amountNum) || !isFinite(amountNum) || amountNum <= 0) {
+            await connection.rollback();
+            return res.status(400).json({ message: 'Amount must be a positive number greater than 0' });
+        }
         
         if (type === 'WITHDRAW') {
             const [trades] = await connection.execute('SELECT * FROM trades WHERE user_id = ? AND status = "OPEN"', [userId]);
@@ -47,19 +51,36 @@ const createFund = async (req, res) => {
             }
         }
 
-        const newBalance = type === 'DEPOSIT' ? currentBalance + amountNum : currentBalance - amountNum;
+        // 2. Update User Balance atomically to prevent overwriting concurrent trade profits
+        if (type === 'WITHDRAW') {
+            const [deductRes] = await connection.execute(
+                'UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?',
+                [amountNum, userId, amountNum]
+            );
+            if (deductRes.affectedRows === 0) {
+                await connection.rollback();
+                return res.status(400).json({ message: 'Insufficient balance' });
+            }
+        } else {
+            await connection.execute(
+                'UPDATE users SET balance = balance + ? WHERE id = ?',
+                [amountNum, userId]
+            );
+        }
 
+<<<<<<< HEAD
         // 2. Record in Ledger with double-entry consistency
+=======
+        // 3. Get verified fresh balance inside transaction for accurate ledger recording
+        const [updatedUserRows] = await connection.execute('SELECT balance FROM users WHERE id = ?', [userId]);
+        const newBalance = parseFloat(updatedUserRows[0]?.balance || 0);
+
+        // 4. Record in Ledger
+>>>>>>> f567a0d87c77b0e9f9bd8d20c5e5793c24d93b6c
         await connection.execute(
             `INSERT INTO ledger (user_id, amount, type, balance_before, balance_after, reference_type, remarks, created_at)
              VALUES (?, ?, ?, ?, ?, 'DIRECT_ADMIN', ?, NOW())`,
             [userId, amountNum, type, currentBalance, newBalance, notes || `Direct Admin ${type}`]
-        );
-
-        // 3. Update User Balance
-        await connection.execute(
-            'UPDATE users SET balance = ? WHERE id = ?',
-            [newBalance, userId]
         );
 
         await connection.commit();
@@ -257,8 +278,14 @@ const updateFund = async (req, res) => {
         }
 
         const old = rows[0];
+        // Acquire row lock to prevent race condition during fund update
+        await connection.execute('SELECT balance FROM users WHERE id = ? FOR UPDATE', [old.user_id]);
         const oldAmount = parseFloat(old.amount);
         const newAmount = parseFloat(amount);
+        if (isNaN(newAmount) || !isFinite(newAmount) || newAmount <= 0) {
+            await connection.rollback();
+            return res.status(400).json({ message: 'Amount must be a positive number greater than 0' });
+        }
         const newType = mode === 'deposit' ? 'DEPOSIT' : 'WITHDRAW';
 
         // 2. Reverse old balance effect
@@ -343,6 +370,8 @@ const deleteFund = async (req, res) => {
         }
 
         const entry = rows[0];
+        // Acquire row lock to prevent race condition during fund deletion
+        await connection.execute('SELECT balance FROM users WHERE id = ? FOR UPDATE', [entry.user_id]);
         const amount = parseFloat(entry.amount);
 
         // 2. Reverse the balance change

@@ -266,6 +266,18 @@ const placeOrder = async (req, res) => {
         return res.status(400).json({ message: 'Request body is empty. Please check your request format.' });
     }
 
+    // Security Guard: Strip all client-supplied lot sizes, leverages, and exposure overrides from payload
+    const forbiddenClientKeys = [
+        'lot_size_at_entry', 'lot_size', 'multiplier', 'lotSize',
+        'leverage_used', 'leverage', 'exposure', 'holding_leverage', 'intraday_leverage',
+        'margin_used', 'required_margin', 'margin', 'actual_qty'
+    ];
+    for (const key of forbiddenClientKeys) {
+        if (key in req.body) {
+            delete req.body[key];
+        }
+    }
+
     const {
         symbol, type, qty, price,
         order_type = 'MARKET',
@@ -273,8 +285,8 @@ const placeOrder = async (req, res) => {
         userId: traderId,
         transactionPassword,
         exit_price,
-        mcxExposureType = 'PER_LOT_BASIS',  // ✅ ADD THIS - from request body
-        tradeType = 'INTRADAY'              // ✅ ADD THIS - from request body (INTRADAY or HOLDING)
+        mcxExposureType = 'PER_LOT_BASIS',
+        tradeType = 'INTRADAY'
     } = req.body;
 
     const requesterId = req.user.id;
@@ -432,29 +444,55 @@ const placeOrder = async (req, res) => {
         }
 
         // ─── PARSE QUANTITY AND PRICE EARLY (needed for validations) ──────────────
-        const qtyNum = parseInt(qty, 10);
+        const qtyNum = Number(qty);
+        if (!Number.isInteger(qtyNum) || qtyNum <= 0) {
+            return res.status(400).json({ success: false, message: 'Quantity must be a positive integer' });
+        }
 
         const instType = req.body.instrument_type || '';
         const isNSEEq = marketType === 'EQUITY' || (marketType === 'NSE' && instType === 'EQ');
         const isNSEDer = (marketType === 'NSE' || marketType === 'NIFTY' || marketType === 'OPTIONS' || marketType === 'NFO') &&
             ['FUT', 'CE', 'PE', 'OPT'].includes(instType);
-        const lotSz = (dbScrip && parseFloat(dbScrip.lot_size) > 0)
-            ? parseFloat(dbScrip.lot_size)
-            : getLotSize(symbol, marketType);
-        const eqUnitsMode = req.body.equity_units_mode || 0;
+        const { MCX_LOT_SIZES, getMcxBaseScrip, getLotSize } = require('../utils/symbolHelper');
+        const CommodityLotService = require('../services/CommodityLotService');
 
-        let orderActualQty = qtyNum;
-        if (isNSEEq && eqUnitsMode === 1) {
-            orderActualQty = qtyNum;
-        } else if (isNSEEq && eqUnitsMode === 0) {
-            orderActualQty = qtyNum * lotSz;
-        } else if (isNSEDer && eqUnitsMode === 1) {
-            orderActualQty = qtyNum;
-        } else if (isNSEDer) {
-            orderActualQty = qtyNum * lotSz;
+        let authoritativeLotSize = null;
+        if (dbScrip && dbScrip.lot_size && parseFloat(dbScrip.lot_size) > 0) {
+            authoritativeLotSize = parseFloat(dbScrip.lot_size);
         } else if (marketType === 'MCX') {
-            orderActualQty = qtyNum * lotSz;
+            const baseSym = getMcxBaseScrip(symbol) || symbol.toUpperCase();
+            if (MCX_LOT_SIZES[baseSym] && MCX_LOT_SIZES[baseSym] > 0) {
+                authoritativeLotSize = MCX_LOT_SIZES[baseSym];
+            } else {
+                authoritativeLotSize = getLotSize(symbol, marketType);
+            }
+        } else if (['COMMODITY', 'COMEX', 'FOREX', 'CRYPTO'].includes(marketType)) {
+            const commInfo = CommodityLotService.getLotInfo(symbol);
+            if (commInfo && commInfo.lot_size > 0) {
+                authoritativeLotSize = commInfo.lot_size;
+            } else {
+                authoritativeLotSize = getLotSize(symbol, marketType);
+            }
+        } else if (isNSEEq) {
+            authoritativeLotSize = 1;
+        } else {
+            authoritativeLotSize = getLotSize(symbol, marketType);
         }
+
+        // Fail-Closed Guard: Abort if lot size cannot be authoritatively resolved
+        if (!authoritativeLotSize || isNaN(authoritativeLotSize) || authoritativeLotSize <= 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Invalid or missing instrument lot size in system master'
+            });
+        }
+
+        const lotSz = authoritativeLotSize;
+        const eqUnitsMode = (isNSEEq && req.body.equity_units_mode !== undefined && req.body.equity_units_mode !== null)
+            ? parseInt(req.body.equity_units_mode, 10)
+            : 0;
+
+        let orderActualQty = (isNSEEq && eqUnitsMode === 1) ? qtyNum : (qtyNum * lotSz);
 
         // 🚀 Live Price Fetcher (prioritize MarketDataService, then direct Kite API)
         let liveMarketPrice = null;
@@ -563,8 +601,19 @@ const placeOrder = async (req, res) => {
                 return res.status(400).json({ message: 'Live price not available. Please login to Zerodha and ensure the symbol is available.' });
             }
         }
-
-        const executionPrice = price ? parseFloat(price) : (order_type === 'MARKET' ? liveMarketPrice : 0);
+        let executionPrice = 0;
+        if (order_type === 'MARKET') {
+            // For MARKET orders, strictly enforce server-side liveMarketPrice.
+            // Client-supplied 'price' is strictly ignored to prevent price manipulation.
+            executionPrice = parseFloat(liveMarketPrice);
+        } else {
+            // For LIMIT / PENDING orders, validate client's target price
+            const parsedPrice = parseFloat(price);
+            if (!price || isNaN(parsedPrice) || parsedPrice <= 0) {
+                return res.status(400).json({ message: 'A valid price greater than 0 is required for Limit/Pending orders' });
+            }
+            executionPrice = parsedPrice;
+        }
         let marginRequired = 0;
 
         if (isNaN(executionPrice) || executionPrice <= 0) {
@@ -724,9 +773,7 @@ const placeOrder = async (req, res) => {
         }
 
         // ─── MCX LOT SIZE VALIDATIONS (100% COMPLETE - DO NOT MODIFY) ────────
-        const { MCX_LOT_SIZES } = require('../utils/symbolHelper');
-
-        let lotSize = 1;
+        let lotSize = authoritativeLotSize;
         if (marketType === 'MCX') {
             const minLot = parseInt(clientConfig.mcxMinLot || 1);
             const maxLot = parseInt(clientConfig.mcxMaxLot || 100);
@@ -739,10 +786,6 @@ const placeOrder = async (req, res) => {
             }
 
             const baseSym = getMcxBaseScrip(symbol) || symbol.toUpperCase();
-            if (MCX_LOT_SIZES[baseSym]) {
-                lotSize = MCX_LOT_SIZES[baseSym];
-            }
-
             let instrumentLotSize = parseInt(clientConfig?.mcxLotMargins?.[baseSym]?.LOT);
             if (isNaN(instrumentLotSize)) {
                 instrumentLotSize = maxLot;
@@ -1346,13 +1389,17 @@ const placeOrder = async (req, res) => {
         }
 
         // ═════════════════════════════════════════════════════════════
-        // EQUITY UNITS/LOTS MODE - Calculate actual_qty based on instrument type
+        // EQUITY UNITS/LOTS MODE - Calculate actual_qty based on authoritative DB configuration
         // ═════════════════════════════════════════════════════════════
         const qtyInput = qtyNum;
         // Enforce Server-Side Master Lot Size (Do not trust arbitrary client-sent lot size)
-        let lotSizeAtEntry = (dbScrip && parseFloat(dbScrip.lot_size) > 0)
-            ? parseFloat(dbScrip.lot_size)
-            : getLotSize(symbol, marketType);
+        // getLotSize already imported at top
+        let lotSizeAtEntry = authoritativeLotSize || ((dbScrip && parseFloat(dbScrip.lot_size) > 0) ? parseFloat(dbScrip.lot_size) : getLotSize(symbol, marketType));
+        const isNseEquity = marketType === 'EQUITY' || (marketType === 'NSE' && (req.body.instrument_type || '') === 'EQ');
+        const isNseDerivative = (marketType === 'NSE' || marketType === 'NIFTY' || marketType === 'OPTIONS' || marketType === 'NFO') &&
+            ['FUT', 'CE', 'PE', 'OPT'].includes(req.body.instrument_type || '');
+        const isMcx = marketType === 'MCX';
+
         const equityUnitsMode = (req.body.equity_units_mode !== undefined && req.body.equity_units_mode !== null)
             ? parseInt(req.body.equity_units_mode, 10)
             : 0;
@@ -1360,28 +1407,6 @@ const placeOrder = async (req, res) => {
 
         let actualQty = qtyNum;
         let tradeMode = 'LOTS';
-        // Get leverage from request body or client config (default 5x)
-        let leverageUsed = parseFloat(req.body.leverage_used) ||
-            parseFloat(clientConfig?.holding_leverage) || 5;
-        // Ensure leverage_used is within valid range (1-10)
-        leverageUsed = Math.max(1, Math.min(10, leverageUsed));
-
-        // Instrument Classification: NSE EQUITY vs Derivatives vs MCX
-        const isNseEquity = marketType === 'EQUITY' || (marketType === 'NSE' && instrumentType === 'EQ');
-        const isNseDerivative = (marketType === 'NSE' || marketType === 'NIFTY' || marketType === 'OPTIONS' || marketType === 'NFO') &&
-            ['FUT', 'CE', 'PE', 'OPT'].includes(instrumentType);
-        const isMcx = marketType === 'MCX';
-
-        console.log('[placeOrder] 📊 Equity Units Mode Calculation:', {
-            qtyInput,
-            exchange: marketType,
-            instrumentType,
-            isNseEquity,
-            isNseDerivative,
-            isMcx,
-            equityUnitsMode,
-            lotSizeAtEntry
-        });
 
         // UNITS vs LOTS calculation
         if (isNseEquity && equityUnitsMode === 1) {
@@ -1389,39 +1414,16 @@ const placeOrder = async (req, res) => {
             actualQty = qtyInput;
             tradeMode = 'UNITS';
             console.log(`[placeOrder] ✅ NSE EQUITY UNITS MODE: ${qtyInput} units = ${actualQty} shares`);
-        }
-        else if (isNseEquity && equityUnitsMode === 0) {
-            // ✅ NSE EQUITY LOTS MODE: actual_qty = qty_input × lot_size
-            actualQty = qtyInput * lotSizeAtEntry;
+        } else {
+            // ✅ ALL LOT-BASED INSTRUMENTS: actual_qty = qty_input * db_lot_size
+            actualQty = qtyInput * authoritativeLotSize;
             tradeMode = 'LOTS';
-            console.log(`[placeOrder] ✅ NSE EQUITY LOTS MODE: ${qtyInput} lots × ${lotSizeAtEntry} = ${actualQty} shares`);
-        }
-        else if (isNseDerivative && equityUnitsMode === 1) {
-            // ✅ NFO DERIVATIVES (FUT, CE, PE, OPT) UNITS MODE: actual_qty = qty_input
-            // Same as equity units mode – user enters raw units, not lots
-            actualQty = qtyInput;
-            tradeMode = 'UNITS';
-            console.log(`[placeOrder] ✅ NFO DERIVATIVE UNITS MODE (${instrumentType}): ${qtyInput} units`);
-        }
-        else if (isNseDerivative) {
-            // ✅ NSE DERIVATIVES LOTS MODE: actual_qty = qty_input × lot_size
-            actualQty = qtyInput * lotSizeAtEntry;
-            tradeMode = 'LOTS';
-            console.log(`[placeOrder] ✅ NSE DERIVATIVE LOTS MODE (${instrumentType}): ${qtyInput} lots × ${lotSizeAtEntry} = ${actualQty}`);
-        }
-        else if (isMcx) {
-            // ✅ MCX: actual_qty = qty_input × lot_size (standard lot-based calculation)
-            actualQty = qtyInput * lotSizeAtEntry;
-            tradeMode = 'LOTS';
-            console.log(`[placeOrder] ✅ MCX LOTS MODE: ${qtyInput} lots × ${lotSizeAtEntry} = ${actualQty}`);
-        }
-        else {
-            actualQty = qtyInput * (lotSizeAtEntry > 0 ? lotSizeAtEntry : 1);
-            tradeMode = 'LOTS';
+            console.log(`[placeOrder] ✅ LOTS MODE: ${qtyInput} lots × ${authoritativeLotSize} = ${actualQty}`);
         }
 
-        // --- Segment-specific Margin Calculation Logic ---
+        // --- Authoritative Segment Exposure & Leverage Derivation (DB clientConfig ONLY) ---
         let newMarginRequired = 0;
+        let leverageUsed = 1;
         const finalTurnover = executionPrice * actualQty;
 
         if (isOptionsSymbol(sym) && type.toUpperCase() === 'BUY') {
@@ -1430,7 +1432,7 @@ const placeOrder = async (req, res) => {
             leverageUsed = 1;
             console.log(`[placeOrder] 🎯 Option Buy Premium Margin: ${newMarginRequired}`);
         } else if (isNseEquity || isNseDerivative) {
-            // ✅ Use segment-aware exposure (INDEX_OPTION vs EQUITY_OPTION vs NSE_EQUITY)
+            // ✅ Use segment-aware exposure derived strictly from DB clientConfig
             const segExp = getSegmentExposure(sym, marketType, clientConfig);
             const exposure = tradeType === 'HOLDING'
                 ? (segExp.holdingExposure || 100)
@@ -1440,21 +1442,19 @@ const placeOrder = async (req, res) => {
             leverageUsed = exposure;
             console.log(`[placeOrder] 🏦 ${segExp.segmentType} Margin: ${finalTurnover} / ${exposure} = ${newMarginRequired}`);
         } else {
-            // Default/MCX: Use MarginService (supports Per Lot Basis)
+            // Default/MCX: Use MarginService with authoritative DB lot size
             try {
                 newMarginRequired = MarginService.calculateRequiredMargin({
                     qty: qtyInput,
                     price: executionPrice,
                     marginConfig,
                     tradeType,
-                    lotSize: lotSizeAtEntry
+                    lotSize: authoritativeLotSize
                 });
             } catch (innerMarginErr) {
                 console.warn(`[placeOrder] Inner MarginService error, falling back to Tier 1 marginRequired: ${innerMarginErr.message}`);
-                newMarginRequired = parseFloat(marginRequired) || ((executionPrice * qtyInput * lotSizeAtEntry) / 500);
+                newMarginRequired = parseFloat(marginRequired) || ((executionPrice * qtyInput * authoritativeLotSize) / 500);
             }
-            // Back-calculate leverage for logging
-            // If margin is 0, leverage is 0 (not infinity or huge number)
             leverageUsed = newMarginRequired > 0 ? finalTurnover / newMarginRequired : 0;
             console.log(`[placeOrder] 🪙 MCX/Other Margin: ${newMarginRequired} (approx leverage: ${leverageUsed > 0 ? leverageUsed.toFixed(1) : '0'}x)`);
         }
@@ -1501,6 +1501,30 @@ const placeOrder = async (req, res) => {
         const connection = await db.getConnection();
         try {
             await connection.beginTransaction();
+
+            // 🔒 Pessimistic Row Lock & Live Margin Validation inside transaction to prevent double-order race condition
+            const [lockedUserRows] = await connection.execute(
+                'SELECT balance FROM users WHERE id = ? FOR UPDATE',
+                [targetUserId]
+            );
+            const liveBalance = lockedUserRows.length > 0 ? parseFloat(lockedUserRows[0].balance || 0) : parseFloat(targetUser.balance || 0);
+
+            const [liveOpenTrades] = await connection.execute(
+                'SELECT margin_used FROM trades WHERE user_id = ? AND status = "OPEN" AND is_pending = 0',
+                [targetUserId]
+            );
+            const liveUsedMargin = liveOpenTrades.reduce((sum, t) => sum + parseFloat(t.margin_used || 0), 0);
+            const liveAvailableMargin = liveBalance - liveUsedMargin;
+
+            if (liveAvailableMargin < newMarginRequired) {
+                await connection.rollback();
+                return res.status(400).json({
+                    message: `Insufficient margin. Required: ₹${newMarginRequired.toFixed(2)}, Available: ₹${liveAvailableMargin.toFixed(2)}`,
+                    required: newMarginRequired.toFixed(2),
+                    available: liveAvailableMargin.toFixed(2),
+                    shortfall: (newMarginRequired - liveAvailableMargin).toFixed(2)
+                });
+            }
 
             if (is_pending) {
                 const [result] = await connection.execute(
@@ -2058,6 +2082,10 @@ const getTrades = async (req, res) => {
                             }
                         }
 
+                        if (!currentPrice && trade.last_market_price !== null && trade.last_market_price !== undefined && parseFloat(trade.last_market_price) > 0) {
+                            currentPrice = parseFloat(trade.last_market_price);
+                        }
+
                         if (currentPrice) {
                             const baselinePrice = (trade.is_carried_forward || trade.status === 'HOLD') && trade.last_settlement_price !== null && trade.last_settlement_price !== undefined
                                 ? parseFloat(trade.last_settlement_price)
@@ -2469,7 +2497,10 @@ const closeTrade = async (req, res) => {
 
         const trade = trades[0];
         if (trade.status !== 'OPEN' && trade.status !== 'HOLD') {
-            return res.status(400).json({ message: 'Trade is already closed or inactive' });
+            return res.status(409).json({
+                success: false,
+                message: 'Trade closure is already in progress or trade has already been closed.'
+            });
         }
 
         // ─── VALIDATIONS (Min Time / Scalping SL) ─────────────────────────
@@ -2512,7 +2543,17 @@ const closeTrade = async (req, res) => {
             }
         }
 
-        const currentPrice = exitPrice || livePriceForClose || trade.entry_price;
+        let currentPrice = exitPrice ? parseFloat(exitPrice) : (livePriceForClose ? parseFloat(livePriceForClose) : null);
+        if (!currentPrice && trade.last_market_price !== null && trade.last_market_price !== undefined && parseFloat(trade.last_market_price) > 0) {
+            currentPrice = parseFloat(trade.last_market_price);
+        }
+
+        // 🛑 SAFETY: If no valid exit or market price is found, do NOT fabricate entry_price. Reject close with clear error.
+        if (!currentPrice || currentPrice <= 0) {
+            return res.status(400).json({
+                message: `Live market price is currently unavailable for ${trade.symbol}. Trade cannot be closed at an invalid price. Please try again when the market feed is active.`
+            });
+        }
         const actualQuantity = trade.actual_qty || (trade.qty * lotSize);
         const validationPnl = trade.type === 'BUY'
             ? (currentPrice - trade.entry_price) * actualQuantity
@@ -2560,7 +2601,13 @@ const closeTrade = async (req, res) => {
             console.error('[closeTrade] Socket emit error:', socketErr.message);
         }
     } catch (err) {
-        console.error('❌ Close Trade Error:', err);
+        console.error('❌ Close Trade Error:', err.message);
+        if (err.message === 'TRADE_CLOSE_IN_PROGRESS' || err.message === 'TRADE_ALREADY_CLOSED' || err.message === 'Trade is already closed') {
+            return res.status(409).json({
+                success: false,
+                message: 'Trade closure is already in progress or trade has already been closed.'
+            });
+        }
         res.status(500).json({ message: 'Server Error', error: err.message });
     }
 };

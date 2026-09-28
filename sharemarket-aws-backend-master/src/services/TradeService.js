@@ -85,22 +85,33 @@ const syncPaperPosition = async (userId, symbol, connection = db) => {
  * Service to handle core Trade operations like closing and auto-squaring off.
  */
 class TradeService {
+    constructor() {
+        // Concurrency lock registry to prevent simultaneous execution for the same trade ID
+        this.closingLocks = new Set();
+    }
 
     /**
      * Closes a single trade by its ID.
      * Reusable for manual close, auto-close, and expiry square-off.
      */
     async closeTrade(tradeId, exitPrice = null, requesterId = 0, providedPnl = null, remark = null, closeIp = null) {
-        const connection = await db.getConnection();
+        // Tier 1 Concurrency Guard: Fast rejection if trade closure is already in-flight
+        if (this.closingLocks.has(tradeId)) {
+            throw new Error('TRADE_CLOSE_IN_PROGRESS');
+        }
+        this.closingLocks.add(tradeId);
+
+        let connection;
         try {
+            connection = await db.getConnection();
             await connection.beginTransaction();
 
-            // 1. Fetch trade and client settings
+            // 1. Fetch trade and client settings with Tier 2 Pessimistic Row Lock (FOR UPDATE)
             const [tradeRows] = await connection.execute(
                 `SELECT t.*, cs.config_json, cs.broker_id 
                  FROM trades t
                  JOIN client_settings cs ON t.user_id = cs.user_id
-                 WHERE t.id = ?`,
+                 WHERE t.id = ? FOR UPDATE`,
                 [tradeId]
             );
 
@@ -108,15 +119,21 @@ class TradeService {
             const trade = tradeRows[0];
             if (trade.status !== 'OPEN' && trade.status !== 'HOLD') throw new Error('Trade is already closed');
 
+            // 🔒 Pessimistic Row Lock to prevent balance race conditions during trade closure
+            await connection.execute('SELECT id, balance FROM users WHERE id = ? FOR UPDATE', [trade.user_id]);
+
             const clientConfig = JSON.parse(trade.config_json || '{}');
             const marginToRelease = parseFloat(trade.margin_used || 0);
 
             // 2. Handle Pending Orders
             if (trade.is_pending == 1) {
-                await connection.execute(
-                    'UPDATE trades SET status = "CANCELLED", exit_price = entry_price, exit_time = NOW(), pnl = 0 WHERE id = ?',
+                const [cancelResult] = await connection.execute(
+                    'UPDATE trades SET status = "CANCELLED", exit_price = entry_price, exit_time = NOW(), pnl = 0 WHERE id = ? AND status IN ("OPEN", "HOLD")',
                     [tradeId]
                 );
+                if (cancelResult.affectedRows === 0) {
+                    throw new Error('TRADE_ALREADY_CLOSED');
+                }
                 await connection.execute(
                     'UPDATE users SET balance = balance + ? WHERE id = ?',
                     [marginToRelease, trade.user_id]
@@ -234,11 +251,27 @@ class TradeService {
                         const cachedPrice = trade.type === 'BUY' ? cachedBidAsk.bid : cachedBidAsk.ask;
                         finalExitPrice = cachedPrice;
                         console.log(`[TradeService] ✅ Using cached bid/ask from ${cachedBidAsk.timestamp}: ${finalExitPrice} (Bid: ${cachedBidAsk.bid}, Ask: ${cachedBidAsk.ask})`);
+                    } else if (trade.last_market_price !== null && trade.last_market_price !== undefined && parseFloat(trade.last_market_price) > 0) {
+                        finalExitPrice = parseFloat(trade.last_market_price);
+                        console.log(`[TradeService] ✅ Using trade.last_market_price: ${finalExitPrice}`);
                     } else {
-                        // 🎯 4. Final Fallback (Entry Price) - only if no cache available
-                        finalExitPrice = trade.entry_price;
-                        console.warn(`[TradeService] ⚠️ No cached bid/ask and no live price, using Entry Price: ${finalExitPrice}`);
+                        // Check scrip_data.last_price
+                        try {
+                            const cleanSym = trade.symbol.includes(':') ? trade.symbol.split(':')[1] : trade.symbol;
+                            const [scripRows] = await connection.execute('SELECT last_price FROM scrip_data WHERE symbol = ? OR symbol = ? LIMIT 1', [trade.symbol, cleanSym]);
+                            if (scripRows.length > 0 && parseFloat(scripRows[0].last_price) > 0) {
+                                finalExitPrice = parseFloat(scripRows[0].last_price);
+                                console.log(`[TradeService] ✅ Using scrip_data.last_price: ${finalExitPrice}`);
+                            }
+                        } catch (e) {
+                            console.warn('[TradeService] Error fetching scrip_data.last_price:', e.message);
+                        }
                     }
+                }
+
+                // 🛑 CRITICAL SAFETY: Never silently close an open trade at entry_price if no market price is found.
+                if (!finalExitPrice || finalExitPrice <= 0) {
+                    throw new Error(`Live market price is currently unavailable for ${trade.symbol}. Trade cannot be closed at an invalid price. Please try again when the market feed is active.`);
                 }
             }
 
@@ -418,10 +451,15 @@ class TradeService {
                 }
             }
 
-            await connection.execute(
-                'UPDATE trades SET status = "CLOSED", exit_price = ?, exit_time = NOW(), pnl = ?, brokerage = ?, swap = ?, closed_by = ?, close_remark = ?, close_ip = ? WHERE id = ?',
+            // Tier 3 Atomic Conditional State Transition
+            const [updateResult] = await connection.execute(
+                'UPDATE trades SET status = "CLOSED", exit_price = ?, exit_time = NOW(), pnl = ?, brokerage = ?, swap = ?, closed_by = ?, close_remark = ?, close_ip = ? WHERE id = ? AND status IN ("OPEN", "HOLD")',
                 [finalExitPrice, pnl, brokerage, swap, closedByValue, remark, closeIp, tradeId]
             );
+
+            if (updateResult.affectedRows === 0) {
+                throw new Error('TRADE_ALREADY_CLOSED');
+            }
 
             await connection.execute(
                 'UPDATE users SET balance = balance + ? WHERE id = ?',
@@ -478,10 +516,15 @@ class TradeService {
 
             return { success: true, pnl, brokerage, swap, balanceChange };
         } catch (err) {
-            await connection.rollback();
+            if (connection) {
+                try { await connection.rollback(); } catch (_) {}
+            }
             throw err;
         } finally {
-            connection.release();
+            this.closingLocks.delete(tradeId);
+            if (connection) {
+                try { connection.release(); } catch (_) {}
+            }
         }
     }
 
@@ -559,6 +602,9 @@ class TradeService {
      */
     async executeNetting(userId, symbol, marketType, incomingTrade, connection) {
         console.log(`[executeNetting] Starting netting for user ${userId}, symbol ${symbol}, type ${incomingTrade.type}, qty ${incomingTrade.qty}`);
+
+        // 🔒 Row Lock to serialize netting calculations for user balance
+        await connection.execute('SELECT id, balance FROM users WHERE id = ? FOR UPDATE', [userId]);
 
         const { isSameInstrument } = require('../utils/symbolHelper');
         const oppositeType = incomingTrade.type === 'BUY' ? 'SELL' : 'BUY';
