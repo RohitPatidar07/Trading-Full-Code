@@ -180,7 +180,7 @@ const getRemarkStyle = (remark) => {
     };
 };
 
-const TradeItem = ({ item, activeTab, livePrice, meta, onOpenCloseModal, onCancel, onSetTargetSL, onEdit }) => {
+const TradeItemComponent = ({ item, activeTab, livePrice, meta, onOpenCloseModal, onCancel, onSetTargetSL, onEdit }) => {
     const isActive = activeTab === 'Active';
     const isPending = activeTab === 'Pending';
     const isClosed = activeTab === 'Closed';
@@ -467,6 +467,32 @@ const TradeItem = ({ item, activeTab, livePrice, meta, onOpenCloseModal, onCance
         </View>
     );
 };
+
+const areTradeItemPropsEqual = (prevProps, nextProps) => {
+    if (prevProps.activeTab !== nextProps.activeTab) return false;
+    if (prevProps.item?.id !== nextProps.item?.id) return false;
+    if (prevProps.item?.status !== nextProps.item?.status) return false;
+    if (prevProps.item?.qty !== nextProps.item?.qty) return false;
+    if (prevProps.item?.entryPrice !== nextProps.item?.entryPrice) return false;
+    if (prevProps.item?.exitPrice !== nextProps.item?.exitPrice) return false;
+    if (prevProps.item?.pnl !== nextProps.item?.pnl) return false;
+    if (prevProps.item?.target !== nextProps.item?.target) return false;
+    if (prevProps.item?.stopLoss !== nextProps.item?.stopLoss) return false;
+
+    // For closed orders, incoming price ticks never affect anything
+    if (nextProps.activeTab === 'Closed') return true;
+
+    const prevL = prevProps.livePrice || {};
+    const nextL = nextProps.livePrice || {};
+
+    return (
+        prevL.ltp === nextL.ltp &&
+        prevL.bid === nextL.bid &&
+        prevL.ask === nextL.ask
+    );
+};
+
+const TradeItem = React.memo(TradeItemComponent, areTradeItemPropsEqual);
 
 import ScreenWrapper from '../../components/ScreenWrapper';
 import ScreenHeader from '../../components/ScreenHeader';
@@ -800,6 +826,61 @@ const TradesScreen = ({ navigation, route }) => {
         }
     };
 
+    const isUnitMode = userConfig?.tradeEquityUnits === 1 || userConfig?.tradeEquityUnits === true;
+
+    const editRequiredMargin = React.useMemo(() => {
+        if (!tradeToEdit) return 0;
+        const parsedPrice = parseFloat(editPrice) || 0;
+        const parsedQty = parseFloat(editQty) || 0;
+        const meta = getInstrumentMeta(tradeToEdit?.name, tradeToEdit?.market_type || tradeToEdit?.market);
+        return calculateSegmentMargin({
+            marketType: tradeToEdit?.market || tradeToEdit?.marketType || tradeToEdit?.market_type || 'MCX',
+            symbol: tradeToEdit?.symbol || tradeToEdit?.name || '',
+            price: parsedPrice,
+            qty: parsedQty,
+            lotSize: tradeToEdit?.lot_size || meta?.multiplier || 1,
+            isHolding: false,
+            clientConfig: userConfig || {},
+            isUnitMode: isUnitMode
+        });
+    }, [tradeToEdit, editPrice, editQty, userConfig, isUnitMode, getInstrumentMeta]);
+
+    const handleOpenCloseModal = React.useCallback((item) => {
+        navigation.navigate('ExitTrade', { trade: item });
+    }, [navigation]);
+
+    const handleCancelOrderCb = React.useCallback((item) => {
+        handleCancelOrder(item);
+    }, [handleCancelOrder]);
+
+    const openTargetModalCb = React.useCallback((item) => {
+        openTargetModal(item);
+    }, [openTargetModal]);
+
+    const handleEditOrderCb = React.useCallback((item) => {
+        handleEditOrder(item);
+    }, [handleEditOrder]);
+
+    const renderTradeItem = React.useCallback(({ item }) => {
+        const normKey = normalizeSymbol(item.name);
+        const cleanSym = (item.name || item.symbol || '').includes(':') ? (item.name || item.symbol).split(':')[1] : (item.name || item.symbol || '');
+        const cleanNorm = normalizeSymbol(cleanSym);
+        const itemLivePrice = livePrices[normKey] || livePrices[cleanNorm] || livePrices[item.name] || livePrices[item.fullSymbol] || livePrices[item.symbol];
+
+        return (
+            <TradeItem
+                item={item}
+                activeTab={activeTab}
+                livePrice={itemLivePrice}
+                meta={getInstrumentMeta(item.name, item.market_type || item.market)}
+                onOpenCloseModal={() => handleOpenCloseModal(item)}
+                onCancel={() => handleCancelOrderCb(item)}
+                onSetTargetSL={() => openTargetModalCb(item)}
+                onEdit={() => handleEditOrderCb(item)}
+            />
+        );
+    }, [activeTab, livePrices, getInstrumentMeta, handleOpenCloseModal, handleCancelOrderCb, openTargetModalCb, handleEditOrderCb]);
+
     return (
         <ScreenWrapper>
             <ScreenHeader title="Trades" />
@@ -820,27 +901,13 @@ const TradesScreen = ({ navigation, route }) => {
             <FlatList
                 data={filteredTrades}
                 keyExtractor={(item) => item.id}
-                renderItem={({ item }) => {
-                    const normKey = normalizeSymbol(item.name);
-                    const cleanSym = (item.name || item.symbol || '').includes(':') ? (item.name || item.symbol).split(':')[1] : (item.name || item.symbol || '');
-                    const cleanNorm = normalizeSymbol(cleanSym);
-                    const itemLivePrice = livePrices[normKey] || livePrices[cleanNorm] || livePrices[item.name] || livePrices[item.fullSymbol] || livePrices[item.symbol];
-
-                    return (
-                        <TradeItem
-                            item={item}
-                            activeTab={activeTab}
-                            livePrice={itemLivePrice}
-                            meta={getInstrumentMeta(item.name, item.market_type || item.market)}
-                            onOpenCloseModal={() => navigation.navigate('ExitTrade', { trade: item })}
-                            onCancel={() => handleCancelOrder(item)}
-                            onSetTargetSL={() => openTargetModal(item)}
-                            onEdit={() => handleEditOrder(item)}
-                        />
-                    );
-                }}
+                renderItem={renderTradeItem}
                 contentContainerStyle={styles.listContent}
                 showsVerticalScrollIndicator={false}
+                initialNumToRender={8}
+                maxToRenderPerBatch={10}
+                windowSize={7}
+                removeClippedSubviews={Platform.OS === 'android'}
                 ListEmptyComponent={
                     <View style={styles.emptyContainer}>
                         <Text style={styles.emptyText}>No {activeTab} Orders</Text>
@@ -970,6 +1037,11 @@ const TradesScreen = ({ navigation, route }) => {
                                     placeholder="Enter Price"
                                     placeholderTextColor="#999"
                                 />
+
+                                <View style={{ backgroundColor: 'rgba(33, 150, 243, 0.12)', borderWidth: 1, borderColor: 'rgba(33, 150, 243, 0.3)', padding: 12, borderRadius: 8, marginVertical: 12, width: '100%', flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                                    <Text style={{ color: '#bbb', fontSize: 13, fontWeight: '500' }}>Margin Required</Text>
+                                    <Text style={{ color: '#2196F3', fontSize: 15, fontWeight: '700' }}>₹{editRequiredMargin.toFixed(2)}</Text>
+                                </View>
 
                                 <TouchableOpacity style={styles.submitBtn} onPress={confirmEditOrder}>
                                     <Text style={styles.submitBtnText}>UPDATE ORDER</Text>

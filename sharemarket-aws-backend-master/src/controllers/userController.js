@@ -384,7 +384,13 @@ const updateClientSettings = async (req, res) => {
 
     try {
         let configObj = config || {};
-        if (autoCloseEnabled !== undefined) configObj.autoCloseEnabled = autoCloseEnabled;
+        const effectiveAutoClose = req.body.autoCloseTrades !== undefined 
+            ? req.body.autoCloseTrades 
+            : (autoCloseEnabled !== undefined ? autoCloseEnabled : (configObj.autoCloseTrades !== undefined ? configObj.autoCloseTrades : configObj.autoCloseEnabled));
+        if (effectiveAutoClose !== undefined) {
+            configObj.autoCloseEnabled = (effectiveAutoClose === true || effectiveAutoClose === 1 || effectiveAutoClose === 'true');
+            configObj.autoCloseTrades = (effectiveAutoClose === true || effectiveAutoClose === 1 || effectiveAutoClose === 'true');
+        }
 
         // ─── If broker is assigned, fetch & apply broker's segment config ─────
         if (brokerId) {
@@ -783,25 +789,29 @@ const resetAccount = async (req, res) => {
  */
 const recalculateBrokerage = async (req, res) => {
     const userId = req.params.id;
+    const connection = await db.getConnection();
     try {
+        await connection.beginTransaction();
+
         // Get user's client settings for brokerage config
-        const [settingsRows] = await db.execute(
+        const [settingsRows] = await connection.execute(
             'SELECT config_json FROM client_settings WHERE user_id = ?', [userId]
         );
         const config = settingsRows.length > 0 ? JSON.parse(settingsRows[0].config_json || '{}') : {};
 
-        // Get all closed trades
-        const [trades] = await db.execute(
-            'SELECT id, symbol, qty, entry_price, exit_price, type FROM trades WHERE user_id = ? AND status = "CLOSED"',
+        // Get all closed trades including current brokerage & market_type
+        const [trades] = await connection.execute(
+            'SELECT id, symbol, qty, entry_price, exit_price, type, brokerage, market_type FROM trades WHERE user_id = ? AND status = "CLOSED"',
             [userId]
         );
 
         // Fetch all segment settings for this user once
-        const [segmentSettings] = await db.execute('SELECT * FROM user_segments WHERE user_id = ?', [userId]);
+        const [segmentSettings] = await connection.execute('SELECT * FROM user_segments WHERE user_id = ?', [userId]);
         const segmentMap = {};
         segmentSettings.forEach(s => segmentMap[s.segment] = s);
 
         let totalBrokerage = 0;
+        let netBrokerageAdjustment = 0;
 
         for (const trade of trades) {
             let brokerage = 0;
@@ -853,21 +863,73 @@ const recalculateBrokerage = async (req, res) => {
                 brokerage = Math.max(0, brokerage);
             }
 
+            brokerage = parseFloat(brokerage.toFixed(2));
+            const oldBrokerage = parseFloat(trade.brokerage || 0);
+            const diff = brokerage - oldBrokerage;
+            netBrokerageAdjustment += diff;
             totalBrokerage += brokerage;
-            await db.execute('UPDATE trades SET brokerage = ? WHERE id = ?', [brokerage, trade.id]);
+
+            await connection.execute('UPDATE trades SET brokerage = ? WHERE id = ?', [brokerage, trade.id]);
+        }
+
+        // Adjust user wallet balance and create ledger entry if there's any discrepancy
+        let currentBalance = 0;
+        let newBalance = 0;
+        const [userRows] = await connection.execute('SELECT balance FROM users WHERE id = ? FOR UPDATE', [userId]);
+        if (userRows.length > 0) {
+            currentBalance = parseFloat(userRows[0].balance || 0);
+            newBalance = currentBalance - netBrokerageAdjustment;
+
+            if (Math.abs(netBrokerageAdjustment) > 0.0001) {
+                // Update user wallet balance
+                await connection.execute('UPDATE users SET balance = ? WHERE id = ?', [newBalance, userId]);
+
+                // Create BROKERAGE_ADJUSTMENT entry in ledger table
+                const isDeduction = netBrokerageAdjustment > 0;
+                await connection.execute(
+                    `INSERT INTO ledger (user_id, amount, type, balance_before, balance_after, reference_type, remarks, created_at)
+                     VALUES (?, ?, 'BROKERAGE_ADJUSTMENT', ?, ?, 'RECALCULATE_BROKERAGE', ?, NOW())`,
+                    [
+                        userId,
+                        Math.abs(netBrokerageAdjustment),
+                        currentBalance,
+                        newBalance,
+                        `Brokerage Recalculated: ${isDeduction ? 'Deducted' : 'Refunded'} ₹${Math.abs(netBrokerageAdjustment).toFixed(2)} across ${trades.length} trades`
+                    ]
+                );
+            }
+        }
+
+        await connection.commit();
+
+        // Invalidate caches
+        try {
+            const { invalidateCache } = require('../utils/cacheManager');
+            await invalidateCache(`users_${userId}_all`);
+            await invalidateCache(`users_${userId}_TRADER`);
+            await invalidateCache(`funds_${userId}_*`);
+            await invalidateCache(`m2m_${userId}_TRADER`);
+            await invalidateCache(`m2m_${userId}_SUPERADMIN`);
+        } catch (cacheErr) {
+            console.warn('[Cache] Recalculate brokerage cache invalidation warning:', cacheErr.message);
         }
 
         await logAction(req.user.id, 'RECALCULATE_BROKERAGE', 'users',
-            `Recalculated brokerage for user #${userId}. Total: ${totalBrokerage.toFixed(2)} across ${trades.length} trades`);
+            `Recalculated brokerage for user #${userId}. Total: ${totalBrokerage.toFixed(2)}, Diff: ${netBrokerageAdjustment.toFixed(2)}, New Balance: ${newBalance.toFixed(2)} across ${trades.length} trades`);
 
         res.json({
             message: 'Brokerage recalculated successfully',
             tradesUpdated: trades.length,
-            totalBrokerage: totalBrokerage.toFixed(2)
+            totalBrokerage: totalBrokerage.toFixed(2),
+            brokerageAdjustment: netBrokerageAdjustment.toFixed(2),
+            newBalance: newBalance.toFixed(2)
         });
     } catch (err) {
+        await connection.rollback();
         console.error('Recalculate Brokerage Error:', err);
-        res.status(500).json({ message: 'Failed to recalculate brokerage' });
+        res.status(500).json({ message: 'Failed to recalculate brokerage: ' + err.message });
+    } finally {
+        connection.release();
     }
 };
 

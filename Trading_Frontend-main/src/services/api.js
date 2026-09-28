@@ -954,3 +954,13 @@ export const getResetIDConfig = async () => {
     return response.data;
 };
 
+export const squareOffAllClientPositions = async (userId) => {
+    const response = await api.post(`/trades/user/${userId}/square-off-all`);
+    return response.data;
+};
+
+export const updateUserStatus = async (userId, status) => {
+    const response = await api.put(`/users/${userId}/status`, { status });
+    return response.data;
+};
+

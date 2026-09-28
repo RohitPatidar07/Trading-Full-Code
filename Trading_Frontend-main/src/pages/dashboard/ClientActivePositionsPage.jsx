@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, AlertTriangle, Loader2, CheckCircle2 } from 'lucide-react';
 import { useParams } from 'react-router-dom';
-import { getLiveM2M, getClientById } from '../../services/api';
+import { getLiveM2M, getClientById, squareOffAllClientPositions } from '../../services/api';
 import { displaySymbol } from '../../utils/marketUtils';
 
 const ClientActivePositionsPage = ({ client: initialClient, onBack, onNavigateToAccount }) => {
@@ -10,6 +10,9 @@ const ClientActivePositionsPage = ({ client: initialClient, onBack, onNavigateTo
     const [positions, setPositions] = useState([]);
     const [loading, setLoading] = useState(true);
     const [prevData, setPrevData] = useState({});
+    const [squareOffModalOpen, setSquareOffModalOpen] = useState(false);
+    const [squareOffLoading, setSquareOffLoading] = useState(false);
+    const [actionMessage, setActionMessage] = useState(null);
 
     const clientId = id || client?.id;
     const clientName = client?.username || client?.fullName || id || 'TRADER';
@@ -204,15 +207,82 @@ const ClientActivePositionsPage = ({ client: initialClient, onBack, onNavigateTo
                 </div>
             </div>
 
-            {/* Action Button */}
-            <div className="pt-4">
+            {/* Action Buttons Area */}
+            <div className="pt-4 flex flex-wrap items-center gap-4">
                 <button
                     onClick={() => onNavigateToAccount && onNavigateToAccount(client || { id })}
                     className="bg-[#4caf50] hover:bg-[#45a049] text-white px-8 py-3 rounded-md text-[13px] font-black uppercase tracking-widest shadow-lg shadow-green-900/20 transition-all border border-white/10"
                 >
                     GO TO {clientName.toUpperCase()}'S ACCOUNT
                 </button>
+                <button
+                    onClick={() => setSquareOffModalOpen(true)}
+                    disabled={positions.length === 0 || squareOffLoading}
+                    className="bg-[#ef4444] hover:bg-[#dc2626] disabled:opacity-50 disabled:cursor-not-allowed text-white px-8 py-3 rounded-md text-[13px] font-black uppercase tracking-widest shadow-lg shadow-red-900/20 transition-all border border-white/10 flex items-center gap-2"
+                >
+                    <AlertTriangle className="w-4 h-4" />
+                    SQUARE OFF ALL POSITIONS
+                </button>
             </div>
+
+            {/* Emergency Action Message Toast */}
+            {actionMessage && (
+                <div className={`fixed bottom-6 right-6 z-50 px-5 py-3 rounded-lg shadow-2xl flex items-center gap-3 border text-white font-bold text-sm ${
+                    actionMessage.type === 'error' ? 'bg-red-600 border-red-400' : 'bg-green-600 border-green-400'
+                }`}>
+                    {actionMessage.type === 'error' ? <AlertTriangle className="w-5 h-5" /> : <CheckCircle2 className="w-5 h-5" />}
+                    <span>{actionMessage.text}</span>
+                </div>
+            )}
+
+            {/* Emergency Square-Off Confirmation Modal */}
+            {squareOffModalOpen && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div className="bg-[#1f283e] border border-red-500/40 rounded-xl p-6 sm:p-8 max-w-md w-full shadow-2xl shadow-red-950/50 flex flex-col items-center text-center">
+                        <div className="w-14 h-14 rounded-full bg-red-500/20 border border-red-500/40 flex items-center justify-center text-red-400 mb-4 shadow-lg shadow-red-500/10">
+                            <AlertTriangle className="w-8 h-8 animate-pulse" />
+                        </div>
+                        <h3 className="text-xl font-black text-white uppercase tracking-tight mb-2">Emergency Square-Off</h3>
+                        <p className="text-slate-300 text-sm leading-relaxed mb-6">
+                            Are you sure you want to square off all <span className="font-extrabold text-red-400">{positions.length} active position(s)</span> for trader <span className="font-extrabold text-white">{clientName.toUpperCase()}</span>?
+                            <br />
+                            <span className="text-xs text-slate-400 mt-2 block">All open positions will be closed immediately at current market prices.</span>
+                        </p>
+                        <div className="grid grid-cols-2 gap-3 w-full">
+                            <button
+                                type="button"
+                                onClick={() => setSquareOffModalOpen(false)}
+                                disabled={squareOffLoading}
+                                className="px-5 py-2.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-white font-bold text-xs uppercase tracking-wider transition-all disabled:opacity-50"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                disabled={squareOffLoading}
+                                onClick={async () => {
+                                    setSquareOffLoading(true);
+                                    try {
+                                        const res = await squareOffAllClientPositions(clientId);
+                                        setActionMessage({ type: 'success', text: res?.message || 'All positions squared off successfully' });
+                                        setPositions([]);
+                                        setSquareOffModalOpen(false);
+                                    } catch (err) {
+                                        setActionMessage({ type: 'error', text: err?.response?.data?.message || err.message || 'Square-off failed' });
+                                    } finally {
+                                        setSquareOffLoading(false);
+                                        setTimeout(() => setActionMessage(null), 4000);
+                                    }
+                                }}
+                                className="px-5 py-2.5 rounded-lg bg-red-600 hover:bg-red-700 text-white font-bold text-xs uppercase tracking-wider transition-all shadow-lg shadow-red-600/30 flex items-center justify-center gap-2 disabled:opacity-50"
+                            >
+                                {squareOffLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                                {squareOffLoading ? 'Closing...' : 'Yes, Square Off'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <style>{`
                 @keyframes flash-green {

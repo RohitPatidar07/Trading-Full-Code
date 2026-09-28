@@ -176,9 +176,11 @@
 
 
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { getBrokerM2M } from '../../services/api';
 
 const BrokerM2MPage = () => {
+  const navigate = useNavigate();
   const [brokerMetrics, setBrokerMetrics] = useState([]);
   const [loading, setLoading] = useState(true);
 
@@ -244,24 +246,39 @@ const BrokerM2MPage = () => {
                 <tr><td colSpan="4" className="px-6 py-6 text-center text-slate-500">Loading...</td></tr>
               ) : brokerMetrics.length === 0 ? (
                 <tr><td colSpan="4" className="px-6 py-6 text-center text-slate-500">No data available</td></tr>
-              ) : brokerMetrics.map((row, idx) => (
-                <tr key={row.user_id || idx} className="border-b border-white/5 hover:bg-[#1a2035]/50 transition-colors">
-                  <td className="px-6 py-3">
-                    <span className="text-[#01B4EA] font-bold cursor-pointer hover:underline">
-                      {row.username}
-                    </span>
-                  </td>
-                  <td className={`px-6 py-3 font-bold ${parseFloat(row.live_pnl || row.activePL || 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-                    {parseFloat(row.live_pnl || row.activePL || 0).toFixed(2)}
-                  </td>
-                  <td className="px-6 py-3 text-slate-300">{row.active_trades || row.activeTrades || 0}</td>
-                  <td className="px-6 py-3 text-slate-300">
-                    {parseFloat(row.marginShortfall) > 0 
-                        ? parseFloat(row.marginShortfall).toFixed(2) 
-                        : parseFloat(row.margin_used || row.margin || 0).toFixed(2)}
-                  </td>
-                </tr>
-              ))}
+              ) : brokerMetrics.map((row, idx) => {
+                const targetUserId = row.user_id || row.id;
+                return (
+                  <tr key={targetUserId || idx} className="border-b border-white/5 hover:bg-[#1a2035]/50 transition-colors">
+                    <td className="px-6 py-3">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (targetUserId) {
+                            navigate(`/client-active-positions/${targetUserId}`, {
+                              state: { client: { id: targetUserId, username: row.username } }
+                            });
+                          }
+                        }}
+                        className="text-[#01B4EA] font-bold hover:underline hover:text-cyan-300 transition-colors focus:outline-none flex items-center space-x-1"
+                        title={`Open active positions for ${row.username}`}
+                      >
+                        <span>{row.username}</span>
+                        {targetUserId && <span className="text-[10px] text-slate-400 font-normal">({targetUserId})</span>}
+                      </button>
+                    </td>
+                    <td className={`px-6 py-3 font-bold ${parseFloat(row.live_pnl || row.activePL || 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                      {parseFloat(row.live_pnl || row.activePL || 0).toFixed(2)}
+                    </td>
+                    <td className="px-6 py-3 text-slate-300">{row.active_trades || row.activeTrades || 0}</td>
+                    <td className="px-6 py-3 text-slate-300">
+                      {parseFloat(row.marginShortfall) > 0 
+                          ? parseFloat(row.marginShortfall).toFixed(2) 
+                          : parseFloat(row.margin_used || row.margin || 0).toFixed(2)}
+                    </td>
+                  </tr>
+                );
+              })}
               {brokerMetrics.length > 0 && (
                 <tr className="border-b border-white/10 bg-[#1a2035] font-bold text-white">
                   <td className="px-6 py-3 text-slate-400">Total</td>
@@ -284,31 +301,31 @@ const BrokerM2MPage = () => {
         <InfoCard
           title="Buy Turnover"
           data={[
-            { label: "Mix:", value: "0 Lakhs" },
+            { label: "MCX:", value: "0 Lakhs" },
             { label: "NSE Fut:", value: "0 Lakhs" },
             { label: "NSE Opt:", value: "0 Lakhs" },
             { label: "Options:", value: "0 Lakhs" },
-            { label: "COMX:", value: "0 Lakhs" },
+            { label: "COMEX:", value: "0 Lakhs" },
           ]}
         />
         <InfoCard
           title="Sell Turnover"
           data={[
-            { label: "Mix:", value: "0 Lakhs" },
+            { label: "MCX:", value: "0 Lakhs" },
             { label: "NSE Fut:", value: "0 Lakhs" },
             { label: "NSE Opt:", value: "0 Lakhs" },
             { label: "Options:", value: "0 Lakhs" },
-            { label: "COMX:", value: "0 Lakhs" },
+            { label: "COMEX:", value: "0 Lakhs" },
           ]}
         />
         <InfoCard
           title="Total Turnover"
           data={[
-            { label: "Mix:", value: "0 Lakhs" },
+            { label: "MCX:", value: "0 Lakhs" },
             { label: "NSE Fut:", value: "0 Lakhs" },
             { label: "NSE Opt:", value: "0 Lakhs" },
             { label: "Options:", value: "0 Lakhs" },
-            { label: "COMX:", value: "0 Lakhs" },
+            { label: "COMEX:", value: "0 Lakhs" },
           ]}
         />
       </div>
@@ -318,31 +335,31 @@ const BrokerM2MPage = () => {
         <InfoCard
           title="Active Users"
           data={[
-            { label: "Mix:", value: "1" },
+            { label: "MCX:", value: "1" },
             { label: "NSE Fut:", value: "1" },
             { label: "NSE Opt:", value: "1" },
             { label: "Options:", value: "1" },
-            { label: "COMX:", value: "0" },
+            { label: "COMEX:", value: "0" },
           ]}
         />
         <InfoCard
           title="Profit / Loss"
           data={[
-            { label: "Mix:", value: "0" },
+            { label: "MCX:", value: "0" },
             { label: "NSE Fut:", value: "0" },
             { label: "NSE Opt:", value: "0" },
             { label: "Options:", value: "0" },
-            { label: "COMX:", value: "0" },
+            { label: "COMEX:", value: "0" },
           ]}
         />
         <InfoCard
           title="Brokerage"
           data={[
-            { label: "Mix:", value: "0" },
+            { label: "MCX:", value: "0" },
             { label: "NSE Fut:", value: "0" },
             { label: "NSE Opt:", value: "0" },
             { label: "Options:", value: "0" },
-            { label: "COMX:", value: "0" },
+            { label: "COMEX:", value: "0" },
           ]}
         />
       </div>
@@ -352,7 +369,7 @@ const BrokerM2MPage = () => {
         <InfoCard
           title="Active Buy"
           data={[
-            { label: "Mix:", value: "0" },
+            { label: "MCX:", value: "0" },
             { label: "NSE Fut:", value: "0" },
             { label: "NSE Opt:", value: "0" },
           ]}
@@ -360,7 +377,7 @@ const BrokerM2MPage = () => {
         <InfoCard
           title="Active Sell"
           data={[
-            { label: "Mix:", value: "0" },
+            { label: "MCX:", value: "0" },
             { label: "NSE Fut:", value: "0" },
             { label: "NSE Opt:", value: "0" },
           ]}

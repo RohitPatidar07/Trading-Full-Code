@@ -47,7 +47,7 @@ const SORT_OPTIONS = [
 
 import FluctuatingPrice from '../../components/FluctuatingPrice';
 
-const WatchlistItem = React.memo(({ item, livePrice, navigation, screenWidth }) => {
+const WatchlistItemComponent = ({ item, livePrice, navigation, screenWidth }) => {
     const prevPriceRef = React.useRef(livePrice);
     const [movementArrow, setMovementArrow] = useState(null);
 
@@ -212,7 +212,29 @@ const WatchlistItem = React.memo(({ item, livePrice, navigation, screenWidth }) 
             </View>
         </TouchableOpacity>
     );
-});
+};
+
+const areWatchlistPropsEqual = (prevProps, nextProps) => {
+    if (prevProps.item?.id !== nextProps.item?.id) return false;
+    if (prevProps.item?.name !== nextProps.item?.name) return false;
+    if (prevProps.item?.fullSymbol !== nextProps.item?.fullSymbol) return false;
+    if (prevProps.screenWidth !== nextProps.screenWidth) return false;
+
+    const prevL = prevProps.livePrice || {};
+    const nextL = nextProps.livePrice || {};
+
+    return (
+        prevL.ltp === nextL.ltp &&
+        prevL.bid === nextL.bid &&
+        prevL.ask === nextL.ask &&
+        prevL.high === nextL.high &&
+        prevL.low === nextL.low &&
+        prevL.open === nextL.open &&
+        prevL.change === nextL.change
+    );
+};
+
+const WatchlistItem = React.memo(WatchlistItemComponent, areWatchlistPropsEqual);
 
 const getMarketStatus = (category) => {
     // Get current time in India (IST)

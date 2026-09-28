@@ -3173,4 +3173,21 @@ const completePendingOrder = async (req, res) => {
     }
 };
 
-module.exports = { placeOrder, getTrades, getTradeById, getGroupTrades, getActivePositions, closeTrade, deleteTrade, updateTrade, restoreTrade, modifyPendingOrder, setTargetSL, completePendingOrder };
+const squareOffAllTrades = async (req, res) => {
+    try {
+        const userId = req.params.userId;
+        const requesterId = req.user.id;
+        console.log(`🚨 [squareOffAllTrades] Admin #${requesterId} triggered emergency square-off for User #${userId}`);
+        const results = await tradeService.closeAllUserTrades(userId, requesterId, 'EMERGENCY_SQUARE_OFF', 'Admin Emergency Square Off');
+        res.json({
+            message: `Emergency square-off completed for ${results.length} trades`,
+            tradesClosed: results.length,
+            results
+        });
+    } catch (err) {
+        console.error('Square-Off All Trades Error:', err);
+        res.status(500).json({ message: 'Failed to square-off all positions', error: err.message });
+    }
+};
+
+module.exports = { placeOrder, getTrades, getTradeById, getGroupTrades, getActivePositions, closeTrade, deleteTrade, updateTrade, restoreTrade, modifyPendingOrder, setTargetSL, completePendingOrder, squareOffAllTrades };

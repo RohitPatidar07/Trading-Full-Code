@@ -49,10 +49,11 @@ const createFund = async (req, res) => {
 
         const newBalance = type === 'DEPOSIT' ? currentBalance + amountNum : currentBalance - amountNum;
 
-        // 2. Record in Ledger
+        // 2. Record in Ledger with double-entry consistency
         await connection.execute(
-            'INSERT INTO ledger (user_id, amount, type, balance_after, remarks) VALUES (?, ?, ?, ?, ?)',
-            [userId, amountNum, type, newBalance, notes]
+            `INSERT INTO ledger (user_id, amount, type, balance_before, balance_after, reference_type, remarks, created_at)
+             VALUES (?, ?, ?, ?, ?, 'DIRECT_ADMIN', ?, NOW())`,
+            [userId, amountNum, type, currentBalance, newBalance, notes || `Direct Admin ${type}`]
         );
 
         // 3. Update User Balance

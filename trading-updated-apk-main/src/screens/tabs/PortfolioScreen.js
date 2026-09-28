@@ -14,21 +14,15 @@ import { calculateSegmentMargin } from '../../utils/segmentMargin';
 import ScreenWrapper from '../../components/ScreenWrapper';
 import ScreenHeader from '../../components/ScreenHeader';
 
+import FluctuatingPrice from '../../components/FluctuatingPrice';
+
 const { width } = Dimensions.get('window');
 
-// Optimized TradeCard component (outside main component to prevent recreation)
-const TradeCard = React.memo(({ trade, livePrices, meta, navigation }) => {
+// Optimized TradeCard component with isolated normalized price subscription
+const TradeCardComponent = ({ trade, livePrice: singleLivePrice, meta, navigation }) => {
     const avgEntry = trade.avgPrice || parseFloat(trade.entryPrice);
-    const normKey = normalizeSymbol(trade.name);
-    const cleanSym = (trade.name || trade.symbol || '').includes(':') ? (trade.name || trade.symbol).split(':')[1] : (trade.name || trade.symbol || '');
-    const cleanNorm = normalizeSymbol(cleanSym);
 
-    const liveData = livePrices[normKey] || 
-                     livePrices[cleanNorm] || 
-                     livePrices[trade.name] || 
-                     livePrices[trade.fullSymbol] || 
-                     livePrices[trade.symbol] || 
-                     { ltp: trade.ltp || 0, bid: trade.bid || 0, ask: trade.ask || 0 };
+    const liveData = singleLivePrice || { ltp: trade.ltp || 0, bid: trade.bid || 0, ask: trade.ask || 0 };
 
     // Validate that we have valid prices (not 0 or NaN)
     const ltp = liveData.ltp && liveData.ltp > 0 ? liveData.ltp : (trade.ltp && trade.ltp > 0 ? trade.ltp : 0);
@@ -36,13 +30,12 @@ const TradeCard = React.memo(({ trade, livePrices, meta, navigation }) => {
     const ask = liveData.ask && liveData.ask > 0 ? liveData.ask : (trade.ask && trade.ask > 0 ? trade.ask : ltp);
 
     // BUY exits at BID, SELL exits at ASK — same logic as P/L calculation in TradeContext
-    // Use LTP as primary source if bid/ask are 0 or invalid
     const cmp = trade.type === 'BUY'
         ? (bid > 0 ? bid : (ltp > 0 ? ltp : avgEntry))
         : (ask > 0 ? ask : (ltp > 0 ? ltp : avgEntry));
     const livePrice = cmp > 0 ? cmp : avgEntry;
     const { userConfig } = useTrades();
-    const pnl = trade.pnl;
+    const pnl = trade.pnl || 0;
 
     const isUnitMode = userConfig?.tradeEquityUnits === 1 || userConfig?.tradeEquityUnits === true;
     let holdingMargin = calculateSegmentMargin({
@@ -97,7 +90,12 @@ const TradeCard = React.memo(({ trade, livePrices, meta, navigation }) => {
                         </View>
                         <View style={styles.priceRow}>
                             <Text style={styles.priceLabel}>CMP  </Text>
-                            <Text style={styles.priceValue}>{livePrice.toFixed(2)}</Text>
+                            <FluctuatingPrice
+                                value={livePrice.toFixed(2)}
+                                numericValue={livePrice}
+                                showLabel={false}
+                                textStyle={styles.priceValue}
+                            />
                         </View>
                     </View>
 
@@ -112,9 +110,12 @@ const TradeCard = React.memo(({ trade, livePrices, meta, navigation }) => {
             <View style={styles.tradeFooter}>
                 <View style={styles.plContainer}>
                     <Text style={styles.plLabel}>P/L </Text>
-                    <Text style={[styles.plValue, { color: pnl >= 0 ? '#4CAF50' : '#FF3B30' }]}>
-                        {pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}
-                    </Text>
+                    <FluctuatingPrice
+                        value={`${pnl >= 0 ? '+' : ''}${pnl.toFixed(2)}`}
+                        numericValue={pnl}
+                        showLabel={false}
+                        textStyle={[styles.plValue, { color: pnl >= 0 ? '#4CAF50' : '#FF3B30' }]}
+                    />
                 </View>
 
                 <Pressable
@@ -138,7 +139,27 @@ const TradeCard = React.memo(({ trade, livePrices, meta, navigation }) => {
             </View>
         </Pressable>
     );
-});
+};
+
+const areTradeCardPropsEqual = (prevProps, nextProps) => {
+    if (prevProps.trade?.name !== nextProps.trade?.name) return false;
+    if (prevProps.trade?.qty !== nextProps.trade?.qty) return false;
+    if (prevProps.trade?.avgPrice !== nextProps.trade?.avgPrice) return false;
+    if (prevProps.trade?.pnl !== nextProps.trade?.pnl) return false;
+    if (prevProps.trade?.type !== nextProps.trade?.type) return false;
+    if (prevProps.meta?.multiplier !== nextProps.meta?.multiplier) return false;
+
+    const prevL = prevProps.livePrice || {};
+    const nextL = nextProps.livePrice || {};
+
+    return (
+        prevL.ltp === nextL.ltp &&
+        prevL.bid === nextL.bid &&
+        prevL.ask === nextL.ask
+    );
+};
+
+const TradeCard = React.memo(TradeCardComponent, areTradeCardPropsEqual);
 
 const PortfolioScreen = ({ navigation }) => {
     const {
@@ -239,11 +260,16 @@ const PortfolioScreen = ({ navigation }) => {
     );
 
     const renderItem = ({ item }) => {
+        const normKey = normalizeSymbol(item.name);
+        const cleanSym = (item.name || item.symbol || '').includes(':') ? (item.name || item.symbol).split(':')[1] : (item.name || item.symbol || '');
+        const cleanNorm = normalizeSymbol(cleanSym);
+        const singlePrice = livePrices[normKey] || livePrices[cleanNorm] || livePrices[item.name] || livePrices[item.fullSymbol] || livePrices[item.symbol] || null;
+
         return (
             <View style={styles.section}>
                 <TradeCard
                     trade={item}
-                    livePrices={livePrices}
+                    livePrice={singlePrice}
                     meta={getInstrumentMeta(item.name, item.market)}
                     navigation={navigation}
                 />

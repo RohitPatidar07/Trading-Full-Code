@@ -1,12 +1,18 @@
 const db = require('../config/db');
 const tradeService = require('./TradeService');
+const marketDataService = require('./MarketDataService');
+
+let isChecking = false;
 
 /**
  * Monitor Target & Stop Loss for all open trades
- * Runs every 5 seconds to check if target/SL is hit
- * Auto-closes trades when conditions are met
+ * Evaluates live prices against target and SL thresholds.
+ * Auto-closes trades when conditions are met.
  */
 const monitorTargetSL = async () => {
+    if (isChecking) return;
+    isChecking = true;
+
     try {
         // Fetch all open trades with target/SL set
         const [trades] = await db.execute(`
@@ -20,12 +26,9 @@ const monitorTargetSL = async () => {
 
         if (trades.length === 0) return;
 
-        console.log(`[TargetSL] Monitoring ${trades.length} trades with target/SL...`);
-
         for (const trade of trades) {
             try {
                 // Get current live price from MarketDataService
-                const marketDataService = require('./MarketDataService');
                 const cleanSymbol = trade.symbol.includes(':') ? trade.symbol.split(':')[1] : trade.symbol;
                 const marketType = (trade.market_type || 'MCX').toUpperCase();
                 const prefix = marketType === 'EQUITY' ? 'NSE' : (marketType === 'OPTIONS' ? 'NFO' : marketType);
@@ -34,43 +37,51 @@ const monitorTargetSL = async () => {
                 const possibleSymbols = [trade.symbol, `${prefix}:${cleanSymbol}`, cleanSymbol];
                 for (const s of possibleSymbols) {
                     const data = marketDataService.getPrice(s);
-                    if (data && data.ltp) {
-                        livePrice = data.ltp;
+                    if (data && data.ltp && parseFloat(data.ltp) > 0) {
+                        livePrice = parseFloat(data.ltp);
                         break;
                     }
                 }
 
-                let currentPrice = livePrice || trade.entry_price;
+                // BUG 4 FIX (Issue B): STRICT PRICE GUARD
+                // If live price is not available, SKIP evaluation. NEVER fallback to entry_price!
+                if (!livePrice || livePrice <= 0) {
+                    continue;
+                }
+
+                const currentPrice = livePrice;
+                const targetPrice = trade.target_price !== null ? parseFloat(trade.target_price) : null;
+                const stopLossPrice = trade.stop_loss !== null ? parseFloat(trade.stop_loss) : null;
 
                 // Check TARGET HIT (Profit scenario)
-                if (trade.target_price) {
+                if (targetPrice !== null && targetPrice > 0) {
                     let targetHit = false;
 
-                    if (trade.type === 'BUY' && currentPrice >= trade.target_price) {
+                    if (trade.type === 'BUY' && currentPrice >= targetPrice) {
                         targetHit = true;
-                    } else if (trade.type === 'SELL' && currentPrice <= trade.target_price) {
+                    } else if (trade.type === 'SELL' && currentPrice <= targetPrice) {
                         targetHit = true;
                     }
 
                     if (targetHit) {
-                        console.log(`[TargetSL] ✅ TARGET HIT - Trade #${trade.id} (${trade.symbol}) at live price ${currentPrice}`);
+                        console.log(`[TargetSL] ✅ TARGET HIT - Trade #${trade.id} (${trade.symbol}) at live price ${currentPrice} (Target: ${targetPrice})`);
                         await autoCloseTrade(trade, currentPrice, 'TARGET_HIT');
                         continue;
                     }
                 }
 
                 // Check STOP LOSS HIT (Loss scenario)
-                if (trade.stop_loss) {
+                if (stopLossPrice !== null && stopLossPrice > 0) {
                     let slHit = false;
 
-                    if (trade.type === 'BUY' && currentPrice <= trade.stop_loss) {
+                    if (trade.type === 'BUY' && currentPrice <= stopLossPrice) {
                         slHit = true;
-                    } else if (trade.type === 'SELL' && currentPrice >= trade.stop_loss) {
+                    } else if (trade.type === 'SELL' && currentPrice >= stopLossPrice) {
                         slHit = true;
                     }
 
                     if (slHit) {
-                        console.log(`[TargetSL] ❌ STOP LOSS HIT - Trade #${trade.id} (${trade.symbol}) at live price ${currentPrice}`);
+                        console.log(`[TargetSL] ❌ STOP LOSS HIT - Trade #${trade.id} (${trade.symbol}) at live price ${currentPrice} (SL: ${stopLossPrice})`);
                         await autoCloseTrade(trade, currentPrice, 'SL_HIT');
                         continue;
                     }
@@ -81,6 +92,8 @@ const monitorTargetSL = async () => {
         }
     } catch (err) {
         console.error('[TargetSL] Monitor error:', err.message);
+    } finally {
+        isChecking = false;
     }
 };
 
@@ -103,14 +116,20 @@ const autoCloseTrade = async (trade, exitPrice, reason) => {
 
 /**
  * Start the monitoring service
- * Checks every 5 seconds
+ * Fast sub-second event-driven triggers + high-frequency fallback check
  */
 const startTargetSLMonitoring = () => {
+    // 1. High-frequency fallback interval (500ms instead of legacy 5000ms)
     setInterval(() => {
-        monitorTargetSL().catch(err => console.error('[TargetSL] Service error:', err));
-    }, 5000); // Check every 5 seconds
+        monitorTargetSL().catch(err => console.error('[TargetSL] Polling service error:', err));
+    }, 500);
 
-    console.log('[TargetSL] 🚀 Auto Target/SL monitoring service started (5s interval)');
+    // 2. Real-time event-driven listener directly on market ticks (< 100ms response)
+    marketDataService.on('update', () => {
+        monitorTargetSL().catch(err => console.error('[TargetSL] Event-driven trigger error:', err));
+    });
+
+    console.log('⚡ [TargetSL] Real-time Sub-Second Target/SL monitoring service active (Event-driven + 500ms fallback)');
 };
 
 module.exports = { startTargetSLMonitoring, monitorTargetSL };

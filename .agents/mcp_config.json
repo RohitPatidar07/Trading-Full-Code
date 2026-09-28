@@ -1,0 +1,14 @@
+{
+  "mcpServers": {
+    "trading-qa-inspector": {
+      "command": "node",
+      "args": [
+        "sharemarket-aws-backend-master/scripts/trading-verification-tool.js"
+      ],
+      "env": {
+        "NODE_ENV": "development",
+        "READONLY_MODE": "true"
+      }
+    }
+  }
+}
