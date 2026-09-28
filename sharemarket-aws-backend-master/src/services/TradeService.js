@@ -111,6 +111,24 @@ class TradeService {
             const clientConfig = JSON.parse(trade.config_json || '{}');
             const marginToRelease = parseFloat(trade.margin_used || 0);
 
+            // Determine requester role early for pricing authority and audit
+            let requesterRole = 'TRADER';
+            let requesterUsername = 'TRADER';
+            if (requesterId === 0) {
+                requesterRole = 'ADMIN';
+                requesterUsername = 'ADMIN';
+            } else {
+                const [reqUserRows] = await connection.execute(
+                    'SELECT role, username FROM users WHERE id = ?',
+                    [requesterId]
+                );
+                if (reqUserRows.length > 0) {
+                    requesterRole = reqUserRows[0].role;
+                    requesterUsername = reqUserRows[0].username || requesterRole;
+                }
+            }
+            const isTraderRequester = requesterRole === 'TRADER';
+
             // 2. Handle Pending Orders
             if (trade.is_pending == 1) {
                 await connection.execute(
@@ -223,7 +241,13 @@ class TradeService {
                 }
             }
 
-            let finalExitPrice = exitPrice;
+            // Determine exit price:
+            // - If ADMIN/SUPERADMIN explicitly provided an exitPrice, honor it
+            // - If TRADER: Always prioritize live market feed (Kite -> Ticker -> Cached Bid/Ask) first
+            let finalExitPrice = null;
+            if (!isTraderRequester && exitPrice && parseFloat(exitPrice) > 0) {
+                finalExitPrice = parseFloat(exitPrice);
+            }
             const isIndianSegment = ['MCX', 'NSE', 'NFO', 'EQUITY', 'OPTIONS'].includes(mType);
 
             if (!finalExitPrice || finalExitPrice <= 0) {
@@ -288,10 +312,17 @@ class TradeService {
                         const cachedPrice = trade.type === 'BUY' ? cachedBidAsk.bid : cachedBidAsk.ask;
                         finalExitPrice = cachedPrice;
                         console.log(`[TradeService] ✅ Using cached bid/ask from ${cachedBidAsk.timestamp}: ${finalExitPrice} (Bid: ${cachedBidAsk.bid}, Ask: ${cachedBidAsk.ask})`);
+                    }
+                }
+
+                // 🎯 4. Fallback: If live feeds unavailable, use provided exitPrice (if valid) or entry price
+                if (!finalExitPrice || finalExitPrice <= 0) {
+                    if (exitPrice && parseFloat(exitPrice) > 0) {
+                        finalExitPrice = parseFloat(exitPrice);
+                        console.log(`[TradeService] Live feeds unavailable, using provided exit price as fallback: ${finalExitPrice}`);
                     } else {
-                        // 🎯 4. Final Fallback (Entry Price) - only if no cache available
                         finalExitPrice = trade.entry_price;
-                        console.warn(`[TradeService] ⚠️ No cached bid/ask and no live price, using Entry Price: ${finalExitPrice}`);
+                        console.warn(`[TradeService] ⚠️ No live price or provided exit price, using Entry Price: ${finalExitPrice}`);
                     }
                 }
             }
@@ -360,45 +391,39 @@ class TradeService {
    Market Status: ${isMcxMarketClosed ? 'CLOSED (23:30+)' : 'OPEN'}
             `);
 
-            // Use provided P/L from frontend if available (calculated at the moment of exit)
-            // Otherwise calculate it based on exit price and actual_qty (for new trades with units/lots mode)
+            // ─── Server-Side Formula Calculation (Always strictly enforced) ───
             let pnl;
-            if (providedPnl !== null && providedPnl !== undefined) {
-                pnl = parseFloat(providedPnl);
-                console.log(`[TradeService] Using provided P/L: ${pnl}`);
-            } else {
-                const baselinePrice = (trade.is_carried_forward || trade.status === 'HOLD') && trade.last_settlement_price !== null && trade.last_settlement_price !== undefined
-                    ? parseFloat(trade.last_settlement_price)
-                    : parseFloat(trade.entry_price);
+            const baselinePrice = (trade.is_carried_forward || trade.status === 'HOLD') && trade.last_settlement_price !== null && trade.last_settlement_price !== undefined
+                ? parseFloat(trade.last_settlement_price)
+                : parseFloat(trade.entry_price);
 
-                const commodityLotService = require('./CommodityLotService');
-                if (commodityLotService.isCommodityScrip(trade.symbol, trade.market_type)) {
-                    const calc = commodityLotService.calculatePnL(trade.symbol, trade.type, baselinePrice, finalExitPrice, trade.qty);
-                    pnl = calc.pnlInr;
-                    console.log(`[TradeService] Calculated Commodity P/L: ${pnl} INR (USD: ${calc.pnlUsd}, Lot Size: ${calc.lotSize}, USDINR: ${calc.usdInr})`);
-                } else if ((trade.market_type || '').toUpperCase() === 'MCX' || getMcxBaseScrip(trade.symbol)) {
-                    const { calculateMcxPnL } = require('../utils/equityPnL');
-                    pnl = calculateMcxPnL({
-                        type: trade.type,
-                        entryPrice: baselinePrice,
-                        exitPrice: finalExitPrice,
-                        qty: trade.qty,
-                        lotSize: lotSize
-                    });
-                    console.log(`[TradeService] Calculated MCX P/L using calculateMcxPnL: ${pnl}`);
-                } else {
-                    const { calculateEquityPnL } = require('../utils/equityPnL');
-                    pnl = calculateEquityPnL({
-                        type: trade.type,
-                        entryPrice: baselinePrice,
-                        exitPrice: finalExitPrice,
-                        qty: trade.qty,
-                        lotSize: lotSize,
-                        tradeMode: trade.trade_mode,
-                        equityUnitsMode: trade.equity_units_mode
-                    });
-                    console.log(`[TradeService] Calculated P/L using calculateEquityPnL: ${pnl}`);
-                }
+            const commodityLotService = require('./CommodityLotService');
+            if (commodityLotService.isCommodityScrip(trade.symbol, trade.market_type)) {
+                const calc = commodityLotService.calculatePnL(trade.symbol, trade.type, baselinePrice, finalExitPrice, trade.qty);
+                pnl = calc.pnlInr;
+                console.log(`[TradeService] Calculated Commodity P/L: ${pnl} INR (USD: ${calc.pnlUsd}, Lot Size: ${calc.lotSize}, USDINR: ${calc.usdInr})`);
+            } else if ((trade.market_type || '').toUpperCase() === 'MCX' || getMcxBaseScrip(trade.symbol)) {
+                const { calculateMcxPnL } = require('../utils/equityPnL');
+                pnl = calculateMcxPnL({
+                    type: trade.type,
+                    entryPrice: baselinePrice,
+                    exitPrice: finalExitPrice,
+                    qty: trade.qty,
+                    lotSize: lotSize
+                });
+                console.log(`[TradeService] Calculated MCX P/L using calculateMcxPnL: ${pnl}`);
+            } else {
+                const { calculateEquityPnL } = require('../utils/equityPnL');
+                pnl = calculateEquityPnL({
+                    type: trade.type,
+                    entryPrice: baselinePrice,
+                    exitPrice: finalExitPrice,
+                    qty: trade.qty,
+                    lotSize: lotSize,
+                    tradeMode: trade.trade_mode,
+                    equityUnitsMode: trade.equity_units_mode
+                });
+                console.log(`[TradeService] Calculated P/L using calculateEquityPnL: ${pnl}`);
             }
 
             // 4. Calculate Brokerage & Swap using Centralized Brokerage Helper
@@ -453,24 +478,7 @@ class TradeService {
             const balanceChange = pnl - brokerage - swap;
 
             // Determine closed_by: Store username if TRADER, role name if ADMIN/SUPERADMIN
-            let closedByValue = 'TRADER';
-            if (requesterId === 0) {
-                closedByValue = 'ADMIN';
-            } else {
-                const [reqUserRows] = await connection.execute(
-                    'SELECT role, username FROM users WHERE id = ?',
-                    [requesterId]
-                );
-                if (reqUserRows.length > 0) {
-                    if (reqUserRows[0].role !== 'TRADER') {
-                        // Admin/SuperAdmin — store role
-                        closedByValue = reqUserRows[0].role;
-                    } else {
-                        // Trader — store actual username for display
-                        closedByValue = reqUserRows[0].username || 'TRADER';
-                    }
-                }
-            }
+            const closedByValue = (requesterRole !== 'TRADER') ? requesterRole : (requesterUsername || 'TRADER');
 
             await connection.execute(
                 'UPDATE trades SET status = "CLOSED", exit_price = ?, exit_time = NOW(), pnl = ?, brokerage = ?, swap = ?, closed_by = ?, close_remark = ?, close_ip = ? WHERE id = ?',

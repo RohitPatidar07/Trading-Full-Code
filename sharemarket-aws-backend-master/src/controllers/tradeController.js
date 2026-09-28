@@ -2545,7 +2545,8 @@ const closeTrade = async (req, res) => {
 
         // ─── EXECUTE CLOSURE VIA SERVICE ──────────────────────────────────
         const closeIp = extractClientIp(req);
-        const result = await tradeService.closeTrade(trade.id, exitPrice, requesterId, pnl, null, closeIp);
+        // Security: Always pass null for pnl so TradeService strictly calculates PnL server-side via formula helpers
+        const result = await tradeService.closeTrade(trade.id, exitPrice, requesterId, null, null, closeIp);
 
         // Send response immediately — don't await paper position sync
         res.json({
