@@ -83,15 +83,11 @@ const createFund = async (req, res) => {
             );
         }
 
-<<<<<<< HEAD
-        // 2. Record in Ledger with double-entry consistency
-=======
         // 3. Get verified fresh balance inside transaction for accurate ledger recording
         const [updatedUserRows] = await connection.execute('SELECT balance FROM users WHERE id = ?', [userId]);
         const newBalance = parseFloat(updatedUserRows[0]?.balance || 0);
 
         // 4. Record in Ledger
->>>>>>> f567a0d87c77b0e9f9bd8d20c5e5793c24d93b6c
         await connection.execute(
             `INSERT INTO ledger (user_id, amount, type, balance_before, balance_after, reference_type, remarks, created_at)
              VALUES (?, ?, ?, ?, ?, 'DIRECT_ADMIN', ?, NOW())`,

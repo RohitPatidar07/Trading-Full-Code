@@ -55,11 +55,7 @@ class RMSService {
         try {
             // 1. Get all open trades for this user with actual_qty, lot_size_at_entry and master_lot_size (BUG 1 FIX)
             const [trades] = await db.execute(
-<<<<<<< HEAD
-                "SELECT t.id, t.symbol, t.type, t.qty, t.actual_qty, t.lot_size_at_entry, t.equity_units_mode, t.entry_price, t.market_type, t.is_carried_forward, t.status, t.last_settlement_price, s.lot_size AS master_lot_size FROM trades t LEFT JOIN scrip_data s ON t.symbol = s.symbol WHERE t.user_id = ? AND t.status = 'OPEN' AND t.is_pending = 0",
-=======
-                "SELECT id, symbol, type, qty, entry_price, market_type, last_market_price, is_carried_forward, last_settlement_price FROM trades WHERE user_id = ? AND status = 'OPEN' AND is_pending = 0",
->>>>>>> f567a0d87c77b0e9f9bd8d20c5e5793c24d93b6c
+                "SELECT t.id, t.symbol, t.type, t.qty, t.actual_qty, t.lot_size_at_entry, t.equity_units_mode, t.entry_price, t.market_type, t.last_market_price, t.is_carried_forward, t.status, t.last_settlement_price, s.lot_size AS master_lot_size FROM trades t LEFT JOIN scrip_data s ON t.symbol = s.symbol WHERE t.user_id = ? AND t.status = 'OPEN' AND t.is_pending = 0",
                 [user.id]
             );
 
