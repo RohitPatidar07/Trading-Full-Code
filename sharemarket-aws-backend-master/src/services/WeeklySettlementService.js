@@ -195,12 +195,16 @@ async function processTraderSettlement({ userId, username, weekStart, weekEnd, s
                     marketDataService.getPrice(cleanSymbol);
             } catch (_) { }
 
-            let priceSource = 'fallback_entry';
-            let settlementPrice = (liveData && liveData.ltp)
-                ? (priceSource = 'live_ltp', parseFloat(liveData.ltp))
-                : parseFloat(trade.current_price || trade.exit_price || trade.entry_price || 0);
+            let priceSource = 'missing';
+            let settlementPrice = null;
 
-            if (!liveData || !liveData.ltp) {
+            if (liveData && liveData.ltp && parseFloat(liveData.ltp) > 0) {
+                settlementPrice = parseFloat(liveData.ltp);
+                priceSource = 'live_ltp';
+            } else if (trade.last_market_price !== null && trade.last_market_price !== undefined && parseFloat(trade.last_market_price) > 0) {
+                settlementPrice = parseFloat(trade.last_market_price);
+                priceSource = 'trade_last_market_price';
+            } else {
                 try {
                     const [scripRows] = await connection.execute(
                         `SELECT last_price FROM scrip_data WHERE symbol = ? OR symbol = ? LIMIT 1`,
@@ -211,6 +215,13 @@ async function processTraderSettlement({ userId, username, weekStart, weekEnd, s
                         priceSource = 'scrip_data';
                     }
                 } catch (_) { }
+            }
+
+            if (settlementPrice === null || isNaN(settlementPrice) || settlementPrice <= 0) {
+                // 🛑 SAFETY: Never calculate MTM or settle a trade using entry_price when market data is unavailable.
+                // Safely defer this trade so its balance and position remain uncorrupted.
+                console.warn(`  ⚠️ [WeeklySettlement] DEFERRED: No valid market price found for trade #${trade.id} (${trade.symbol}). Skipping MTM settlement for this trade until valid market data is available.`);
+                continue;
             }
 
             const baselinePrice = (trade.last_settlement_price !== null && trade.last_settlement_price !== undefined)
@@ -366,11 +377,14 @@ async function processTraderSettlement({ userId, username, weekStart, weekEnd, s
             }
         }
 
-        // 8. Update User's Balance and create Ledger Transaction Audit Trail for MTM PnL
-        await connection.execute(
-            `UPDATE users SET balance = ? WHERE id = ?`,
-            [closingBalance, userId]
-        );
+        // 8. Update User's Balance atomically using delta adjustment to prevent overwriting concurrent deposits/trades
+        const netAdjustment = closingBalance - parseFloat(user.balance || 0);
+        if (netAdjustment !== 0) {
+            await connection.execute(
+                `UPDATE users SET balance = balance + ? WHERE id = ?`,
+                [netAdjustment, userId]
+            );
+        }
 
         const remarksText = `Weekly Settlement ${weekStart} to ${weekEnd} | MTM PnL: ₹${totalUnrealizedMtmPnl.toFixed(2)}`;
 

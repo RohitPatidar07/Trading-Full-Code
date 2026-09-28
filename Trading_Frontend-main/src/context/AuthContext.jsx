@@ -28,7 +28,7 @@ export const ROLE_MENU_ACCESS = {
 
     ],
     ADMIN: [
-        'dashboard', 'market-watch', 'notifications', 'user-notifications',
+        'dashboard', 'market-data', 'market-watch', 'notifications', 'user-notifications',
         'active-positions', 'closed-positions', 'trading-clients', 'brokers', 'trades',
         'group-trades', 'closed-trades', 'deleted-trades', 'pending-orders',
         'funds', 'tickers', 'banned', 'bank', 'new-client-bank',

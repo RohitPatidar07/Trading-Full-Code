@@ -501,41 +501,49 @@ const getClientLiveM2M = async (req, res) => {
                     : entryPrice;
 
                 // Use BID for BUY trades (exit by selling), ASK for SELL trades
-                const exitPrice = isBuy
-                    ? (liveData?.bid || liveData?.ltp || baselinePrice)
-                    : (liveData?.ask || liveData?.ltp || baselinePrice);
+                const marketPrice = isBuy
+                    ? (liveData?.bid && liveData.bid > 0 ? liveData.bid : (liveData?.ltp && liveData.ltp > 0 ? liveData.ltp : null))
+                    : (liveData?.ask && liveData.ask > 0 ? liveData.ask : (liveData?.ltp && liveData.ltp > 0 ? liveData.ltp : null));
+
+                const lastKnownPrice = trade.last_market_price !== null && trade.last_market_price !== undefined && parseFloat(trade.last_market_price) > 0
+                    ? parseFloat(trade.last_market_price)
+                    : null;
+
+                const exitPrice = marketPrice || lastKnownPrice || null;
 
                 let unrealizedPnl = 0;
-                const commodityLotService = require('../services/CommodityLotService');
-                if (commodityLotService.isCommodityScrip(trade.symbol, mType)) {
-                    const calc = commodityLotService.calculatePnL(trade.symbol, trade.type, baselinePrice, exitPrice, qty);
-                    unrealizedPnl = calc.pnlInr;
-                } else {
-                    const { calculateEquityPnL, calculateMcxPnL } = require('../utils/equityPnL');
-                    const resolvedLot = (parseFloat(trade.lot_size_at_entry) > 0)
-                        ? parseFloat(trade.lot_size_at_entry)
-                        : lotSize;
-                    if (mType === 'MCX') {
-                        unrealizedPnl = calculateMcxPnL({
-                            type: trade.type,
-                            entryPrice: baselinePrice,
-                            exitPrice: exitPrice,
-                            qty: qty,
-                            qtyInput: trade.qty_input,
-                            lotSize: resolvedLot
-                        });
+                if (exitPrice !== null && exitPrice > 0) {
+                    const commodityLotService = require('../services/CommodityLotService');
+                    if (commodityLotService.isCommodityScrip(trade.symbol, mType)) {
+                        const calc = commodityLotService.calculatePnL(trade.symbol, trade.type, baselinePrice, exitPrice, qty);
+                        unrealizedPnl = calc.pnlInr;
                     } else {
-                        unrealizedPnl = calculateEquityPnL({
-                            type: trade.type,
-                            entryPrice: baselinePrice,
-                            exitPrice: exitPrice,
-                            qty: qty,
-                            qtyInput: trade.qty_input,
-                            actualQty: trade.actual_qty,
-                            lotSize: resolvedLot,
-                            tradeMode: trade.trade_mode,
-                            equityUnitsMode: trade.equity_units_mode
-                        });
+                        const { calculateEquityPnL, calculateMcxPnL } = require('../utils/equityPnL');
+                        const resolvedLot = (parseFloat(trade.lot_size_at_entry) > 0)
+                            ? parseFloat(trade.lot_size_at_entry)
+                            : lotSize;
+                        if (mType === 'MCX') {
+                            unrealizedPnl = calculateMcxPnL({
+                                type: trade.type,
+                                entryPrice: baselinePrice,
+                                exitPrice: exitPrice,
+                                qty: qty,
+                                qtyInput: trade.qty_input,
+                                lotSize: resolvedLot
+                            });
+                        } else {
+                            unrealizedPnl = calculateEquityPnL({
+                                type: trade.type,
+                                entryPrice: baselinePrice,
+                                exitPrice: exitPrice,
+                                qty: qty,
+                                qtyInput: trade.qty_input,
+                                actualQty: trade.actual_qty,
+                                lotSize: resolvedLot,
+                                tradeMode: trade.trade_mode,
+                                equityUnitsMode: trade.equity_units_mode
+                            });
+                        }
                     }
                 }
 
@@ -962,7 +970,7 @@ module.exports = {
 
             // 4. Calculate P/L for each open trade
             for (const trade of trades) {
-                let currentPrice = trade.entry_price;
+                let currentPrice = null;
                 try {
                     const cleanSymbol = trade.symbol.includes(':') ? trade.symbol.split(':')[1] : trade.symbol;
                     const marketType = (trade.market_type || 'MCX').toUpperCase();
@@ -972,49 +980,57 @@ module.exports = {
                     let liveData = null;
                     for (const s of possibleSymbols) {
                         liveData = marketDataService.getPrice(s);
-                        if (liveData) break;
+                        if (liveData && (liveData.ltp || liveData.bid || liveData.ask)) break;
                     }
 
-                    if (liveData && liveData.ltp) {
-                        currentPrice = liveData.ltp;
+                    if (liveData) {
+                        currentPrice = trade.type === 'BUY'
+                            ? (liveData.bid && liveData.bid > 0 ? liveData.bid : liveData.ltp)
+                            : (liveData.ask && liveData.ask > 0 ? liveData.ask : liveData.ltp);
                     }
                 } catch (_) { }
 
-                let pnl = 0;
-                const baselinePrice = (trade.is_carried_forward || trade.status === 'HOLD') && trade.last_settlement_price !== null && trade.last_settlement_price !== undefined
-                    ? parseFloat(trade.last_settlement_price)
-                    : parseFloat(trade.entry_price);
+                if ((!currentPrice || currentPrice <= 0) && trade.last_market_price !== null && trade.last_market_price !== undefined && parseFloat(trade.last_market_price) > 0) {
+                    currentPrice = parseFloat(trade.last_market_price);
+                }
 
-                const commodityLotService = require('../services/CommodityLotService');
-                if (commodityLotService.isCommodityScrip(trade.symbol, trade.market_type)) {
-                    const calc = commodityLotService.calculatePnL(trade.symbol, trade.type, baselinePrice, currentPrice, trade.qty);
-                    pnl = calc.pnlInr;
-                } else {
-                    const { calculateEquityPnL, calculateMcxPnL } = require('../utils/equityPnL');
-                    const { getLotSize } = require('../utils/symbolHelper');
-                    const mktType = (trade.market_type || '').toUpperCase();
-                    const resolvedLot = parseFloat(trade.lot_size_at_entry || trade.lot_size) || getLotSize(trade.symbol, mktType);
-                    if (mktType === 'MCX') {
-                        pnl = calculateMcxPnL({
-                            type: trade.type,
-                            entryPrice: baselinePrice,
-                            exitPrice: currentPrice,
-                            qty: trade.qty,
-                            qtyInput: trade.qty_input,
-                            lotSize: resolvedLot
-                        });
+                let pnl = 0;
+                if (currentPrice !== null && currentPrice > 0) {
+                    const baselinePrice = (trade.is_carried_forward || trade.status === 'HOLD') && trade.last_settlement_price !== null && trade.last_settlement_price !== undefined
+                        ? parseFloat(trade.last_settlement_price)
+                        : parseFloat(trade.entry_price);
+
+                    const commodityLotService = require('../services/CommodityLotService');
+                    if (commodityLotService.isCommodityScrip(trade.symbol, trade.market_type)) {
+                        const calc = commodityLotService.calculatePnL(trade.symbol, trade.type, baselinePrice, currentPrice, trade.qty);
+                        pnl = calc.pnlInr;
                     } else {
-                        pnl = calculateEquityPnL({
-                            type: trade.type,
-                            entryPrice: baselinePrice,
-                            exitPrice: currentPrice,
-                            qty: trade.qty,
-                            qtyInput: trade.qty_input,
-                            actualQty: trade.actual_qty,
-                            lotSize: resolvedLot,
-                            tradeMode: trade.trade_mode,
-                            equityUnitsMode: trade.equity_units_mode
-                        });
+                        const { calculateEquityPnL, calculateMcxPnL } = require('../utils/equityPnL');
+                        const { getLotSize } = require('../utils/symbolHelper');
+                        const mktType = (trade.market_type || '').toUpperCase();
+                        const resolvedLot = parseFloat(trade.lot_size_at_entry || trade.lot_size) || getLotSize(trade.symbol, mktType);
+                        if (mktType === 'MCX') {
+                            pnl = calculateMcxPnL({
+                                type: trade.type,
+                                entryPrice: baselinePrice,
+                                exitPrice: currentPrice,
+                                qty: trade.qty,
+                                qtyInput: trade.qty_input,
+                                lotSize: resolvedLot
+                            });
+                        } else {
+                            pnl = calculateEquityPnL({
+                                type: trade.type,
+                                entryPrice: baselinePrice,
+                                exitPrice: currentPrice,
+                                qty: trade.qty,
+                                qtyInput: trade.qty_input,
+                                actualQty: trade.actual_qty,
+                                lotSize: resolvedLot,
+                                tradeMode: trade.trade_mode,
+                                equityUnitsMode: trade.equity_units_mode
+                            });
+                        }
                     }
                 }
 

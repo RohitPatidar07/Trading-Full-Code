@@ -1,0 +1,190 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Trading Platform Core API",
+    "version": "1.0.0",
+    "description": "Authoritative Trading Engine, Order Execution, and Ledger Transfer Services. Lot sizes, exposures, and margin requirements are strictly server-derived."
+  },
+  "servers": [
+    {
+      "url": "http://localhost:5000/api",
+      "description": "Local Development Server"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    },
+    "schemas": {
+      "PlaceOrderRequest": {
+        "type": "object",
+        "required": ["symbol", "type", "qty"],
+        "properties": {
+          "symbol": {
+            "type": "string",
+            "example": "NIFTY24OCT25000CE",
+            "description": "Trading instrument symbol. Must match system master record."
+          },
+          "type": {
+            "type": "string",
+            "enum": ["BUY", "SELL"],
+            "example": "BUY"
+          },
+          "qty": {
+            "type": "integer",
+            "minimum": 1,
+            "example": 2,
+            "description": "Input quantity (Lots for derivatives/MCX, or raw Units if Equity Units Mode is active)."
+          },
+          "order_type": {
+            "type": "string",
+            "enum": ["MARKET", "LIMIT"],
+            "default": "MARKET",
+            "example": "MARKET"
+          },
+          "price": {
+            "type": "number",
+            "format": "float",
+            "example": 125.50,
+            "description": "Target price for LIMIT orders."
+          },
+          "tradeType": {
+            "type": "string",
+            "enum": ["INTRADAY", "HOLDING"],
+            "default": "INTRADAY",
+            "example": "INTRADAY"
+          },
+          "equity_units_mode": {
+            "type": "integer",
+            "enum": [0, 1],
+            "default": 0,
+            "description": "1 = Cash Equity Units Mode (1 share/unit), 0 = Standard Lots Mode."
+          }
+        },
+        "description": "Note: Any client-supplied lot_size_at_entry or leverage_used fields are stripped and ignored. All multipliers are derived from DB."
+      },
+      "InternalTransferRequest": {
+        "type": "object",
+        "required": ["toUserId", "amount"],
+        "properties": {
+          "toUserId": {
+            "type": "integer",
+            "example": 20,
+            "description": "Destination trader user ID. Must be different from authenticated sender."
+          },
+          "amount": {
+            "type": "number",
+            "format": "float",
+            "minimum": 0.01,
+            "example": 50000.00,
+            "description": "Positive transfer amount."
+          },
+          "notes": {
+            "type": "string",
+            "example": "Ledger rebalance settlement",
+            "description": "Audit remarks for action_ledger."
+          }
+        }
+      },
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "example": false },
+          "message": { "type": "string", "example": "Invalid or missing instrument lot size in system master" }
+        }
+      },
+      "TransferSuccessResponse": {
+        "type": "object",
+        "properties": {
+          "success": { "type": "boolean", "example": true },
+          "message": { "type": "string", "example": "Successfully transferred ₹50000 to user trader2" },
+          "transfer": {
+            "type": "object",
+            "properties": {
+              "fromUserId": { "type": "integer", "example": 10 },
+              "toUserId": { "type": "integer", "example": 20 },
+              "amount": { "type": "number", "example": 50000.00 },
+              "sourceBalance": { "type": "number", "example": 150000.00 },
+              "destinationBalance": { "type": "number", "example": 75000.00 }
+            }
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/trades/place": {
+      "post": {
+        "summary": "Place a Live Trading Order",
+        "description": "Validates input and places an order. Lot size and segment exposure are strictly computed from DB master records.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PlaceOrderRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Order placed successfully" },
+          "400": {
+            "description": "Validation error or Fail-Closed missing lot size error",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          },
+          "401": { "description": "Unauthorized - Missing or invalid JWT token" },
+          "403": { "description": "Forbidden - Trading permission disabled or KYC blocked" },
+          "500": { "description": "Internal server error" }
+        }
+      }
+    },
+    "/paper/orders": {
+      "post": {
+        "summary": "Place a Paper Trading Order",
+        "description": "Simulates order placement in paper trading engine with server-authoritative lot sizes.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/PlaceOrderRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Paper order recorded successfully" },
+          "400": { "description": "Validation error", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } } }
+        }
+      }
+    },
+    "/portfolio/transfer": {
+      "post": {
+        "summary": "Internal Fund Transfer Between Accounts",
+        "description": "Executes atomic double-entry fund transfer with FOR UPDATE row locking and action_ledger recording.",
+        "security": [{ "bearerAuth": [] }],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/InternalTransferRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Transfer executed atomically",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/TransferSuccessResponse" } } }
+          },
+          "400": {
+            "description": "Validation error, insufficient balance, or self-transfer attempt",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorResponse" } } }
+          }
+        }
+      }
+    }
+  }
+}
