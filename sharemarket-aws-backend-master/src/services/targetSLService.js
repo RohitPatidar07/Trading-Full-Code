@@ -40,7 +40,13 @@ const monitorTargetSL = async () => {
                     }
                 }
 
-                let currentPrice = livePrice || trade.entry_price;
+                let currentPrice = (livePrice !== null && !isNaN(livePrice) && parseFloat(livePrice) > 0) ? parseFloat(livePrice) : null;
+
+                // 🛑 CRITICAL SAFETY: Never evaluate Target/Stop-Loss on entry_price or missing price.
+                // Wait for a valid live market tick to avoid false executions.
+                if (currentPrice === null) {
+                    continue;
+                }
 
                 // Check TARGET HIT (Profit scenario)
                 if (trade.target_price) {
