@@ -5,6 +5,11 @@ import tailwindcss from '@tailwindcss/vite'
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  css: {
+    postcss: {
+      plugins: [],
+    },
+  },
   define: {
     'process.env.VITE_API_URL': JSON.stringify(process.env.VITE_API_URL || ''),
     'process.env.VITE_SOCKET_URL': JSON.stringify(process.env.VITE_SOCKET_URL || '')
