@@ -117,10 +117,6 @@ class TradeService {
                     'UPDATE trades SET status = "CANCELLED", exit_price = entry_price, exit_time = NOW(), pnl = 0 WHERE id = ?',
                     [tradeId]
                 );
-                await connection.execute(
-                    'UPDATE users SET balance = balance + ? WHERE id = ?',
-                    [marginToRelease, trade.user_id]
-                );
                 await connection.commit();
 
                 // Fetch username for logging

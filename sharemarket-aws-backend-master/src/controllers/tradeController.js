@@ -2601,7 +2601,9 @@ const deleteTrade = async (req, res) => {
         if (trade.status === 'DELETED') return res.status(400).json({ message: 'Trade already deleted' });
 
         // Refund: margin + PnL (for CLOSED trades) or just margin (for OPEN trades)
-        const marginToRefund = parseFloat(trade.margin_used || 0);
+        // If trade is pending (is_pending === 1), no margin was deducted so marginToRefund = 0
+        const isPending = trade.is_pending == 1 || trade.is_pending === true;
+        const marginToRefund = isPending ? 0 : parseFloat(trade.margin_used || 0);
         const pnlToRefund = trade.status === 'CLOSED' ? parseFloat(trade.pnl || 0) : 0;
         const balanceRefund = marginToRefund + pnlToRefund;
 
