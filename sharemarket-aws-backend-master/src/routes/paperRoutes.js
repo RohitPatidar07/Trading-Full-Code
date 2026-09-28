@@ -2,13 +2,14 @@ const express = require('express');
 const router = express.Router();
 const controller = require('../controllers/paperTradingController');
 const { authMiddleware } = require('../middleware/auth');
+const validateOrderRequest = require('../middleware/validateOrderRequest');
 
 /**
  * Routes for the Paper Trading Platform.
  */
 
 // Orders
-router.post('/orders', authMiddleware, controller.placeOrder);
+router.post('/orders', authMiddleware, validateOrderRequest, controller.placeOrder);
 router.get('/orders', authMiddleware, controller.getOrders);
 router.delete('/orders/:id', authMiddleware, controller.cancelOrder);
 

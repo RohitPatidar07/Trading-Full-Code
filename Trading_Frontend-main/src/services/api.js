@@ -183,6 +183,21 @@ export const getNetHoldingMargin = async (clientId) => {
     return response.data;
 };
 
+// ─── INTERNAL DATA & FUND TRANSFER ──────────────────
+export const internalTransfer = async (data) => {
+    const response = await api.post('/portfolio/transfer', {
+        toUserId: parseInt(data.toUserId, 10),
+        amount: parseFloat(data.amount),
+        notes: data.notes || ''
+    });
+    return response.data;
+};
+
+export const getInternalTransfers = async (params = {}) => {
+    const response = await api.get('/portfolio/ledger', { params });
+    return response.data;
+};
+
 // ─── REQUESTS ────────────────────────────────────────
 export const getRequests = async (params = {}) => {
     const response = await api.get('/requests', { params });

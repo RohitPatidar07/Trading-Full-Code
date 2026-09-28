@@ -5,6 +5,7 @@ import { getTrades, deleteTrade } from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { useMarketData } from '../../context/MarketDataContext';
 import { displaySymbol } from '../../utils/marketUtils';
+import { generateCSVAsync } from '../../utils/sheetWorkerClient';
 
 const PAGE_SIZE = 20;
 
@@ -101,23 +102,35 @@ const TradesPage = ({ onCreateClick, onNavigate }) => {
         setSelectedTrades(e.target.checked ? pagedTrades.map(t => t.id) : []);
     };
 
-    const handleExport = () => {
+    const handleExport = async () => {
         if (filteredTrades.length === 0) return alert('No trades to export');
         const headers = ['ID', 'Scrip', 'Type', 'Username', 'Buy Rate', 'Sell Rate', 'Lots', 'Status', 'Entry Time'];
-        const csvContent = [
-            headers.join(','),
-            ...filteredTrades.map(t => [
-                t.id, t.symbol, t.type, t.username,
-                t.type === 'BUY' ? t.entry_price : (t.exit_price || ''),
-                t.type === 'SELL' ? t.entry_price : (t.exit_price || ''),
-                t.qty, t.status, t.entry_time
-            ].join(','))
-        ].join('\n');
-        const blob = new Blob([csvContent], { type: 'text/csv' });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = 'trades_export.csv';
-        link.click();
+        const dataRows = filteredTrades.map(t => [
+            t.id, t.symbol, t.type, t.username,
+            t.type === 'BUY' ? t.entry_price : (t.exit_price || ''),
+            t.type === 'SELL' ? t.entry_price : (t.exit_price || ''),
+            t.qty, t.status, t.entry_time
+        ]);
+
+        try {
+            const csvContent = await generateCSVAsync(headers, dataRows);
+            const blob = new Blob([csvContent], { type: 'text/csv' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'trades_export.csv';
+            link.click();
+        } catch (err) {
+            console.error('Export worker error, using direct fallback:', err);
+            const fallbackCsv = [
+                headers.join(','),
+                ...dataRows.map(row => row.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+            ].join('\n');
+            const blob = new Blob([fallbackCsv], { type: 'text/csv' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'trades_export.csv';
+            link.click();
+        }
     };
 
     const fmtTime = (t) => {

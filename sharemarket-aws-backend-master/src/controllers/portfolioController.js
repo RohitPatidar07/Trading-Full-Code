@@ -23,32 +23,99 @@ const getLedger = async (req, res) => {
 const internalTransfer = async (req, res) => {
     const { toUserId, amount, notes } = req.body;
     const fromUserId = req.user.id;
+
+    // 1. Strict Input & Self-Transfer Validation
+    if (!toUserId || amount === undefined || amount === null) {
+        return res.status(400).json({ success: false, message: 'toUserId and amount are required' });
+    }
+
+    const transferAmount = parseFloat(amount);
+    if (isNaN(transferAmount) || transferAmount <= 0) {
+        return res.status(400).json({ success: false, message: 'Transfer amount must be a positive number' });
+    }
+
+    if (parseInt(fromUserId) === parseInt(toUserId)) {
+        return res.status(400).json({ success: false, message: 'Cannot transfer funds to the same account' });
+    }
+
     const connection = await db.getConnection();
 
     try {
         await connection.beginTransaction();
 
-        // Check balance of sender if not SUPERADMIN
-        if (req.user.role !== 'SUPERADMIN') {
-            const [sender] = await connection.execute('SELECT balance FROM users WHERE id = ?', [fromUserId]);
-            if (sender[0].balance < amount) throw new Error('Insufficient balance');
+        // 2. Lock & Validate Source Account
+        const [sourceRows] = await connection.execute(
+            'SELECT id, username, full_name, balance, role FROM users WHERE id = ? FOR UPDATE',
+            [fromUserId]
+        );
+        if (!sourceRows.length) {
+            throw new Error(`Source user (ID: ${fromUserId}) not found`);
         }
 
-        // Update balances
-        await connection.execute('UPDATE users SET balance = balance - ? WHERE id = ?', [amount, fromUserId]);
-        await connection.execute('UPDATE users SET balance = balance + ? WHERE id = ?', [amount, toUserId]);
-
-        // Log transfer
-        await connection.execute(
-            'INSERT INTO internal_transfers (from_user_id, to_user_id, amount, notes) VALUES (?, ?, ?, ?)',
-            [fromUserId, toUserId, amount, notes]
+        // 3. Lock & Validate Destination Account
+        const [destRows] = await connection.execute(
+            'SELECT id, username, full_name, balance, role FROM users WHERE id = ? FOR UPDATE',
+            [toUserId]
         );
+        if (!destRows.length) {
+            throw new Error(`Destination user (ID: ${toUserId}) not found`);
+        }
+
+        const sourceBal = parseFloat(sourceRows[0].balance || 0);
+        const destBal = parseFloat(destRows[0].balance || 0);
+
+        // 4. Sender Balance Check (except for SUPERADMIN bypass)
+        if (req.user.role !== 'SUPERADMIN' && sourceBal < transferAmount) {
+            throw new Error(`Insufficient funds: available ₹${sourceBal.toFixed(2)}, required ₹${transferAmount.toFixed(2)}`);
+        }
+
+        const newSourceBal = sourceBal - transferAmount;
+        const newDestBal = destBal + transferAmount;
+
+        // 5. Double-Entry Atomic Balance Updates
+        await connection.execute('UPDATE users SET balance = balance - ? WHERE id = ?', [transferAmount, fromUserId]);
+        await connection.execute('UPDATE users SET balance = balance + ? WHERE id = ?', [transferAmount, toUserId]);
+
+        // 6. Record in internal_transfers Audit Table
+        try {
+            await connection.execute(
+                'INSERT INTO internal_transfers (from_user_id, to_user_id, amount) VALUES (?, ?, ?)',
+                [fromUserId, toUserId, transferAmount]
+            );
+        } catch (logErr) {
+            console.warn('[internalTransfer] internal_transfers logging warning:', logErr.message);
+        }
+
+        // 7. Record in action_ledger for Admin Audit Trail
+        try {
+            await connection.execute(
+                'INSERT INTO action_ledger (admin_id, action_type, target_table, description) VALUES (?, ?, ?, ?)',
+                [
+                    fromUserId,
+                    'INTERNAL_TRANSFER',
+                    'users',
+                    `Transferred ₹${transferAmount} from user ${fromUserId} (${sourceRows[0].username || ''}) to user ${toUserId} (${destRows[0].username || ''}). Notes: ${notes || 'N/A'}`
+                ]
+            );
+        } catch (_) {}
 
         await connection.commit();
-        res.json({ message: 'Transfer successful' });
+
+        return res.status(200).json({
+            success: true,
+            message: `Successfully transferred ₹${transferAmount} to user ${destRows[0].full_name || destRows[0].username || toUserId}`,
+            transfer: {
+                fromUserId: parseInt(fromUserId),
+                toUserId: parseInt(toUserId),
+                amount: transferAmount,
+                sourceBalance: newSourceBal,
+                destinationBalance: newDestBal
+            }
+        });
     } catch (err) {
         await connection.rollback();
-        res.status(400).json({ message: err.message });
+        console.error('[internalTransfer] Transaction failed and rolled back:', err.message);
+        return res.status(400).json({ success: false, message: err.message });
     } finally {
         connection.release();
     }
