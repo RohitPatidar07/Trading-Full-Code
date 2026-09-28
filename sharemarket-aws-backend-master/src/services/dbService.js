@@ -38,6 +38,7 @@ const executeAddFund = async (connection, { userId, amount }) => {
         throw new Error(`User ${userId} not found`);
     }
 
+
     await connection.execute(
         'UPDATE users SET balance = balance + ? WHERE id = ?',
         [amt, userId]

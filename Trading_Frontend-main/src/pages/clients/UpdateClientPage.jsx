@@ -7,7 +7,7 @@ import ComexForm from './ComexForm';
 import ForexForm from './ForexForm';
 import CryptoForm from './CryptoForm';
 
-const InputField = ({ label, name, value, onChange, type = "text", placeholder, hint, hintColor, className = "", disabled }) => (
+const InputField = ({ label, name, value, onChange, type = "text", placeholder, hint, hintColor, className = "", disabled, ...rest }) => (
     <div className={`mb-6 group px-2 ${className} ${disabled ? 'opacity-50' : ''}`}>
         <label
             htmlFor={name}
@@ -25,6 +25,7 @@ const InputField = ({ label, name, value, onChange, type = "text", placeholder, 
             placeholder={placeholder}
             disabled={disabled}
             className={`w-full bg-transparent border-b border-white/20 py-1 text-white focus:outline-none focus:border-[#4caf50] transition-colors text-[16px] ${disabled ? 'cursor-not-allowed' : ''}`}
+            {...rest}
         />
         {hint && <p className="text-[14px] mt-2 font-semibold leading-normal" style={{ color: hintColor || '#BCC0CF', fontFamily: 'Roboto, Helvetica, Arial, sans-serif' }}>{hint}</p>}
     </div>
@@ -516,9 +517,10 @@ const UpdateClientPage = ({ client, onClose, onSave, onLogout, onNavigate }) => 
                     equityScalpingStopLoss: !!settings.scalping_sl_enabled ? 'Enabled' : 'Disabled',
                     optionsMinTimeToBookProfit: String(settings.min_time_to_book_profit || '0'),
                     optionsScalpingStopLoss: !!settings.scalping_sl_enabled ? 'Enabled' : 'Disabled',
-                    autoCloseTrades: !!settings.scalping_sl_enabled,
+                    autoCloseTrades: config.autoCloseTrades !== undefined ? !!config.autoCloseTrades : (config.autoCloseEnabled !== undefined ? !!config.autoCloseEnabled : true),
                     // Merge all config_json fields (MCX, Equity, Options, etc.)
                     ...(Object.keys(config).length > 0 ? {
+                        autoCloseTrades: config.autoCloseTrades !== undefined ? !!config.autoCloseTrades : (config.autoCloseEnabled !== undefined ? !!config.autoCloseEnabled : prev.autoCloseTrades),
                         mcxTrading: config.mcxTrading ?? prev.mcxTrading,
                         mcxMinLot: config.mcxMinLot ?? prev.mcxMinLot,
                         banMcxLimitOrder: config.banMcxLimitOrder ?? prev.banMcxLimitOrder,
@@ -710,6 +712,32 @@ const UpdateClientPage = ({ client, onClose, onSave, onLogout, onNavigate }) => 
 
             const userId = effectiveClient.id;
 
+            // ─── STRICT VALIDATION: Intraday & Holding Exposure Margins must be positive (> 0) ───
+            const exposureChecks = [
+                { key: 'mcxIntradayMargin', label: 'MCX Intraday Exposure', condition: formData.mcxTrading && formData.mcxExposureType !== 'per_lot' },
+                { key: 'mcxHoldingMargin', label: 'MCX Holding Exposure', condition: formData.mcxTrading && formData.mcxExposureType !== 'per_lot' },
+                { key: 'equityIntradayMargin', label: 'Equity Intraday Exposure', condition: formData.equityTrading },
+                { key: 'equityHoldingMargin', label: 'Equity Holding Exposure', condition: formData.equityTrading },
+                { key: 'optionsIndexIntraday', label: 'Options Index Intraday Margin', condition: formData.indexOptionsTrading },
+                { key: 'optionsIndexHolding', label: 'Options Index Holding Margin', condition: formData.indexOptionsTrading },
+                { key: 'optionsEquityIntraday', label: 'Options Equity Intraday Margin', condition: formData.equityOptionsTrading },
+                { key: 'optionsEquityHolding', label: 'Options Equity Holding Margin', condition: formData.equityOptionsTrading },
+                { key: 'optionsMcxIntraday', label: 'Options MCX Intraday Margin', condition: formData.mcxOptionsTrading },
+                { key: 'optionsMcxHolding', label: 'Options MCX Holding Margin', condition: formData.mcxOptionsTrading },
+            ];
+
+            for (const item of exposureChecks) {
+                if (item.condition) {
+                    const rawVal = formData[item.key];
+                    const numVal = parseFloat(rawVal);
+                    if (rawVal === undefined || rawVal === null || String(rawVal).trim() === '' || isNaN(numVal) || numVal <= 0) {
+                        setSaveError(`❌ ${item.label} must be a valid positive number greater than 0. Received: "${rawVal ?? ''}". Zero, negative, and alphabetic values are not allowed.`);
+                        setLoading(false);
+                        return;
+                    }
+                }
+            }
+
             // ─── VALIDATE against broker's MCX minimum margins & brokerage ───
             if (brokerMcxMargins || brokerMcxBrokerage) {
                 // 1. Validate Exposure Lot wise (Intraday & Holding) vs Broker's Margins
@@ -774,11 +802,17 @@ const UpdateClientPage = ({ client, onClose, onSave, onLogout, onNavigate }) => 
                 allowFreshEntry: formData.allowFreshEntry ? 1 : 0,
                 allowOrdersBetweenHL: formData.allowOrdersBetweenHL ? 1 : 0,
                 tradeEquityUnits: formData.tradeEquityUnits ? 1 : 0,
+                autoCloseEnabled: formData.autoCloseTrades ? true : false,
+                autoCloseTrades: formData.autoCloseTrades ? true : false,
                 autoClosePct: formData.autoClosePercentage,
                 notifyPct: formData.notifyPercentage,
                 banAllSegmentLimitOrder: formData.banAllSegmentLimitOrder ? 1 : 0,
                 brokerId: brokerId,
-                config: configToSave
+                config: {
+                    ...configToSave,
+                    autoCloseEnabled: formData.autoCloseTrades ? true : false,
+                    autoCloseTrades: formData.autoCloseTrades ? true : false
+                }
             };
             // alert('DEBUG: Sending tradeEquityUnits=' + payload.tradeEquityUnits);
             console.log('[DEBUG] Payload:', payload);

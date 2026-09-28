@@ -988,9 +988,13 @@ export const getResetIDConfig = async () => {
     return response.data;
 };
 
+export const squareOffAllClientPositions = async (userId) => {
+    const response = await api.post(`/trades/user/${userId}/square-off-all`);
+    return response.data;
+};
+
 // ─── ORDER FLOW TRACER ────────────────────────────────────────────────────────
 export const traceTrade = async (tradeId) => {
     const response = await api.get(`/trace/trade/${tradeId}`);
     return response.data;
 };
-

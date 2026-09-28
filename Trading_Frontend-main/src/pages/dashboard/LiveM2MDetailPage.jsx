@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, ShieldAlert, Loader2, CheckCircle2, AlertTriangle } from 'lucide-react';
 import { useParams } from 'react-router-dom';
-import { getLiveM2M, getClientById } from '../../services/api';
+import { getLiveM2M, getClientById, updateUserStatus } from '../../services/api';
 import { displaySymbol } from '../../utils/marketUtils';
 
 const LiveM2MDetailPage = ({ selectedClient: initialClient, onBack, onClientClick }) => {
@@ -13,6 +13,9 @@ const LiveM2MDetailPage = ({ selectedClient: initialClient, onBack, onClientClic
     const [prevData, setPrevData] = useState({});
     const [isBroker, setIsBroker] = useState(false);
     const [isBrokerList, setIsBrokerList] = useState(false);
+    const [blockModalClient, setBlockModalClient] = useState(null);
+    const [blockLoading, setBlockLoading] = useState(false);
+    const [blockToast, setBlockToast] = useState(null);
 
     // Recover client data if missing (on refresh or history back)
     useEffect(() => {
@@ -104,6 +107,33 @@ const LiveM2MDetailPage = ({ selectedClient: initialClient, onBack, onClientClic
         }
     }, [subClients]);
 
+    const handleConfirmBlock = async () => {
+        if (!blockModalClient) return;
+        const newStatus = blockModalClient.status === 'Suspended' ? 'Active' : 'Suspended';
+        setBlockLoading(true);
+        try {
+            await updateUserStatus(blockModalClient.id, newStatus);
+            setSubClients(prev =>
+                prev.map(c => c.id === blockModalClient.id ? { ...c, status: newStatus } : c)
+            );
+            setBlockToast({
+                type: 'success',
+                message: `User ${blockModalClient.username} (${blockModalClient.id}) has been ${newStatus === 'Suspended' ? 'blocked from trading' : 'unblocked'} successfully.`
+            });
+            setTimeout(() => setBlockToast(null), 4000);
+            setBlockModalClient(null);
+        } catch (err) {
+            console.error('Failed to update user block status:', err);
+            setBlockToast({
+                type: 'error',
+                message: err.response?.data?.message || 'Failed to update user trading status'
+            });
+            setTimeout(() => setBlockToast(null), 4000);
+        } finally {
+            setBlockLoading(false);
+        }
+    };
+
     const StatCard = ({ title, data }) => (
         <div className="bg-[#1f283e] rounded-md shadow-2xl relative mt-0 sm:mt-6 mb-0 shrink-0 border border-white/5">
             {/* Offset Header */}
@@ -137,15 +167,16 @@ const LiveM2MDetailPage = ({ selectedClient: initialClient, onBack, onClientClic
     );
 
     const totals = subClients.reduce((acc, c) => ({
-        ledger: acc.ledger + parseFloat(c.ledger),
-        m2m: acc.m2m + parseFloat(c.m2m),
-        activePL: acc.activePL + parseFloat(c.activePL),
+        ledger: acc.ledger + parseFloat(c.ledger || 0),
+        m2m: acc.m2m + parseFloat(c.m2m || 0),
+        activePL: acc.activePL + parseFloat(c.activePL || 0),
         closedPL: acc.closedPL + parseFloat(c.closedPL || 0),
-        trades: acc.trades + parseInt(c.trades),
-        margin: acc.margin + parseFloat(c.margin),
+        trades: acc.trades + parseInt(c.trades || 0),
+        margin: acc.margin + parseFloat(c.margin || 0),
         marginUsed: acc.marginUsed + parseFloat(c.marginUsed || 0),
-        holding: acc.holding + parseFloat(c.holding)
-    }), { ledger: 0, m2m: 0, activePL: 0, closedPL: 0, trades: 0, margin: 0, marginUsed: 0, holding: 0 });
+        holding: acc.holding + parseFloat(c.holding || 0),
+        netExposure: acc.netExposure + parseFloat(c.netExposure || (parseFloat(c.marginUsed || 0) * 5))
+    }), { ledger: 0, m2m: 0, activePL: 0, closedPL: 0, trades: 0, margin: 0, marginUsed: 0, holding: 0, netExposure: 0 });
 
     const parseFormattedVal = (group, segment) => {
         if (!backendStats || !backendStats[group]) return 0;
@@ -174,25 +205,29 @@ const LiveM2MDetailPage = ({ selectedClient: initialClient, onBack, onClientClic
     return (
         <div className="flex flex-col bg-[#1a2035] px-3 sm:px-4 md:px-6 py-3 sm:py-4 gap-y-14 md:gap-y-12 pb-10">
 
-            {/* Broker Summary Header Cards */}
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4 md:gap-6">
-                <div className="bg-[#1f283e] p-3 sm:p-4 md:p-6 rounded-lg border border-white/5 shadow-xl transition-all hover:border-[#4caf50]/30 group">
-                    <p className="text-slate-400 text-[8px] sm:text-[9px] md:text-[10px] font-black uppercase tracking-widest mb-1 sm:mb-2 text-right group-hover:text-[#4caf50] transition-colors">Client Ledger</p>
-                    <h3 className="text-white text-sm sm:text-lg md:text-2xl font-black text-right tabular-nums">{totals.ledger.toLocaleString(undefined, { minimumFractionDigits: 2 })}</h3>
+            {/* Broker Summary Header Cards (5 Cards: Client Ledger, Active P/L, Open Positions, Margin Used, Net Exposure) */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4 md:gap-5">
+                <div className="bg-[#1f283e] p-3 sm:p-4 rounded-lg border border-white/5 shadow-xl transition-all hover:border-[#4caf50]/30 group">
+                    <p className="text-slate-400 text-[8px] sm:text-[9px] md:text-[10px] font-black uppercase tracking-widest mb-1 text-right group-hover:text-[#4caf50] transition-colors">Client Ledger</p>
+                    <h3 className="text-white text-sm sm:text-lg md:text-xl font-black text-right tabular-nums">{totals.ledger.toLocaleString(undefined, { minimumFractionDigits: 2 })}</h3>
                 </div>
-                <div className="bg-[#1f283e] p-3 sm:p-4 md:p-6 rounded-lg border border-white/5 shadow-xl transition-all hover:border-[#4caf50]/30 group">
-                    <p className="text-slate-400 text-[8px] sm:text-[9px] md:text-[10px] font-black uppercase tracking-widest mb-1 sm:mb-2 text-right group-hover:text-[#4caf50] transition-colors">Active P/L</p>
-                    <h3 className={`text-sm sm:text-lg md:text-2xl font-black text-right tabular-nums transition-colors duration-500 ${totals.activePL >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                <div className="bg-[#1f283e] p-3 sm:p-4 rounded-lg border border-white/5 shadow-xl transition-all hover:border-[#4caf50]/30 group">
+                    <p className="text-slate-400 text-[8px] sm:text-[9px] md:text-[10px] font-black uppercase tracking-widest mb-1 text-right group-hover:text-[#4caf50] transition-colors">Active P/L</p>
+                    <h3 className={`text-sm sm:text-lg md:text-xl font-black text-right tabular-nums transition-colors duration-500 ${totals.activePL >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                         {totals.activePL.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                     </h3>
                 </div>
-                <div className="bg-[#1f283e] p-3 sm:p-4 md:p-6 rounded-lg border border-white/5 shadow-xl transition-all hover:border-[#4caf50]/30 group">
-                    <p className="text-slate-400 text-[8px] sm:text-[9px] md:text-[10px] font-black uppercase tracking-widest mb-1 sm:mb-2 text-right group-hover:text-[#4caf50] transition-colors">Open Positions</p>
-                    <h3 className="text-white text-sm sm:text-lg md:text-2xl font-black text-right tabular-nums">{totals.trades}</h3>
+                <div className="bg-[#1f283e] p-3 sm:p-4 rounded-lg border border-white/5 shadow-xl transition-all hover:border-[#4caf50]/30 group">
+                    <p className="text-slate-400 text-[8px] sm:text-[9px] md:text-[10px] font-black uppercase tracking-widest mb-1 text-right group-hover:text-[#4caf50] transition-colors">Open Positions</p>
+                    <h3 className="text-white text-sm sm:text-lg md:text-xl font-black text-right tabular-nums">{totals.trades}</h3>
                 </div>
-                <div className="bg-[#1f283e] p-3 sm:p-4 md:p-6 rounded-lg border border-white/5 shadow-xl transition-all hover:border-[#4caf50]/30 group">
-                    <p className="text-slate-400 text-[8px] sm:text-[9px] md:text-[10px] font-black uppercase tracking-widest mb-1 sm:mb-2 text-right group-hover:text-[#4caf50] transition-colors">Margin Used</p>
-                    <h3 className="text-white text-sm sm:text-lg md:text-2xl font-black text-right tabular-nums">{totals.marginUsed.toLocaleString(undefined, { minimumFractionDigits: 2 })}</h3>
+                <div className="bg-[#1f283e] p-3 sm:p-4 rounded-lg border border-white/5 shadow-xl transition-all hover:border-[#4caf50]/30 group">
+                    <p className="text-slate-400 text-[8px] sm:text-[9px] md:text-[10px] font-black uppercase tracking-widest mb-1 text-right group-hover:text-[#4caf50] transition-colors">Margin Used</p>
+                    <h3 className="text-white text-sm sm:text-lg md:text-xl font-black text-right tabular-nums">{totals.marginUsed.toLocaleString(undefined, { minimumFractionDigits: 2 })}</h3>
+                </div>
+                <div className="bg-[#1f283e] p-3 sm:p-4 rounded-lg border border-white/5 shadow-xl transition-all hover:border-[#4caf50]/30 group col-span-2 sm:col-span-1">
+                    <p className="text-slate-400 text-[8px] sm:text-[9px] md:text-[10px] font-black uppercase tracking-widest mb-1 text-right group-hover:text-[#4caf50] transition-colors">Net Exposure</p>
+                    <h3 className="text-white text-sm sm:text-lg md:text-xl font-black text-right tabular-nums">{totals.netExposure.toLocaleString(undefined, { minimumFractionDigits: 2 })}</h3>
                 </div>
             </div>
 
@@ -225,7 +260,7 @@ const LiveM2MDetailPage = ({ selectedClient: initialClient, onBack, onClientClic
                                         <tr className="text-[#a0aec0] text-[9px] sm:text-[11px] font-black uppercase tracking-widest leading-none">
                                             <th className="px-3 sm:px-4 py-4 sm:py-6">User ID</th>
                                             <th className="px-3 sm:px-4 py-4 sm:py-6">Role</th>
-                                            <th className="px-3 sm:px-4 py-4 sm:py-6">Closed Profit/Loss</th>
+                                            <th className="px-3 sm:px-4 py-4 sm:py-6">Active Profit/Loss</th>
                                             <th className="px-3 sm:px-4 py-4 sm:py-6">Active Trades</th>
                                             <th className="px-3 sm:px-4 py-4 sm:py-6 text-right">Margin Used</th>
                                         </tr>
@@ -305,13 +340,31 @@ const LiveM2MDetailPage = ({ selectedClient: initialClient, onBack, onClientClic
                                             return (
                                                 <tr key={index} className="border-b border-white/5 hover:bg-white/[0.02] transition-colors group">
                                                     <td className="px-3 sm:px-4 py-3 sm:py-4">
-                                                        <button
-                                                            onClick={() => onClientClick(client)}
-                                                            className="inline-block px-4 py-1 rounded-full text-[11px] font-bold text-white shadow-[0_4px_10px_rgba(76,175,80,0.4)] hover:shadow-[0_4px_20px_rgba(76,175,80,0.6)] transition-all cursor-pointer border border-white/10"
-                                                            style={{ background: 'linear-gradient(60deg, #288c6c, #4ea752)' }}
-                                                        >
-                                                            {client.id} : {client.username}
-                                                        </button>
+                                                        <div className="flex items-center gap-2">
+                                                            <button
+                                                                onClick={() => onClientClick(client)}
+                                                                className="inline-block px-4 py-1 rounded-full text-[11px] font-bold text-white shadow-[0_4px_10px_rgba(76,175,80,0.4)] hover:shadow-[0_4px_20px_rgba(76,175,80,0.6)] transition-all cursor-pointer border border-white/10"
+                                                                style={{ background: 'linear-gradient(60deg, #288c6c, #4ea752)' }}
+                                                            >
+                                                                {client.id} : {client.username}
+                                                            </button>
+                                                            {(client.role === 'TRADER' || !client.role) && (
+                                                                <button
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        setBlockModalClient(client);
+                                                                    }}
+                                                                    className={`px-2.5 py-1 rounded border text-[10px] font-bold uppercase tracking-wider transition-all shadow-sm ${
+                                                                        client.status === 'Suspended'
+                                                                            ? 'bg-amber-500/20 text-amber-300 border-amber-500/40 hover:bg-amber-500/30'
+                                                                            : 'bg-red-500/15 text-red-300 border-red-500/30 hover:bg-red-500/30'
+                                                                    }`}
+                                                                    title="Block trading for this user"
+                                                                >
+                                                                    {client.status === 'Suspended' ? 'BLOCKED' : 'BLOCK TRADING'}
+                                                                </button>
+                                                            )}
+                                                        </div>
                                                     </td>
                                                     <td className="px-3 sm:px-4 py-3 sm:py-4">
                                                         <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${client.role === 'ADMIN'
@@ -343,14 +396,14 @@ const LiveM2MDetailPage = ({ selectedClient: initialClient, onBack, onClientClic
                                         <tr className="bg-black/20 font-black text-white uppercase text-[10px] sm:text-[12px] tracking-widest border-t-2 border-white/10">
                                             <td className="px-3 sm:px-4 py-4 sm:py-6">TOTAL</td>
                                             <td className="px-3 sm:px-4 py-4 sm:py-6"></td>
-                                            <td className="px-3 sm:px-4 py-4 sm:py-6 tabular-nums">{totals.ledger.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                                            <td className="px-3 sm:px-4 py-4 sm:py-6 tabular-nums">{totals.m2m.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                                            <td className="px-3 sm:px-4 py-4 sm:py-6 text-white tabular-nums">{totals.ledger.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                                            <td className="px-3 sm:px-4 py-4 sm:py-6 text-white tabular-nums">{totals.m2m.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                                             <td className={`px-3 sm:px-4 py-4 sm:py-6 tabular-nums ${totals.activePL >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                                                 {totals.activePL > 0 ? '+' : ''}{totals.activePL.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                             </td>
                                             <td className="px-3 sm:px-4 py-4 sm:py-6 tabular-nums">{totals.trades}</td>
-                                            <td className="px-3 sm:px-4 py-4 sm:py-6 tabular-nums">{totals.marginUsed.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
-                                            <td className="px-3 sm:px-4 py-4 sm:py-6 tabular-nums text-right">{totals.margin.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                                            <td className="px-3 sm:px-4 py-4 sm:py-6 tabular-nums text-white font-bold">{totals.marginUsed.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
+                                            <td className="px-3 sm:px-4 py-4 sm:py-6 tabular-nums text-right text-white font-bold">{totals.margin.toLocaleString(undefined, { minimumFractionDigits: 2 })}</td>
                                         </tr>
                                     </tbody>
                                 </table>
@@ -486,6 +539,82 @@ const LiveM2MDetailPage = ({ selectedClient: initialClient, onBack, onClientClic
                             ]}
                         />
                     </div>
+                </div>
+            )}
+
+            {/* Centered Confirmation Modal for Bug 3: Block Trading */}
+            {blockModalClient && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-in fade-in duration-200">
+                    <div className="bg-[#1a2236] border border-red-500/30 rounded-xl shadow-2xl max-w-md w-full overflow-hidden p-6">
+                        <div className="flex items-center space-x-3 text-red-400 mb-4">
+                            <div className="p-3 bg-red-500/20 rounded-full border border-red-500/30">
+                                <ShieldAlert size={28} />
+                            </div>
+                            <div>
+                                <h3 className="text-lg font-bold text-white tracking-wide">
+                                    {blockModalClient.status === 'Suspended' ? 'Unblock User Trading' : 'Block User Trading'}
+                                </h3>
+                                <p className="text-xs text-slate-400 font-medium">User: {blockModalClient.username} (ID: {blockModalClient.id})</p>
+                            </div>
+                        </div>
+
+                        <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3.5 mb-5 text-sm text-slate-200">
+                            <p className="font-semibold text-red-300 mb-1">
+                                {blockModalClient.status === 'Suspended'
+                                    ? `Are you sure you want to unblock this user?`
+                                    : `Are you sure you want to block this user?`}
+                            </p>
+                            <p className="text-xs text-slate-400">
+                                {blockModalClient.status === 'Suspended'
+                                    ? 'Unblocking will allow this client to place new orders and trade in their accounts.'
+                                    : 'Blocking will immediately suspend this client from placing new orders and stop active trading.'}
+                            </p>
+                        </div>
+
+                        <div className="flex items-center justify-end space-x-3 pt-2">
+                            <button
+                                type="button"
+                                disabled={blockLoading}
+                                onClick={() => setBlockModalClient(null)}
+                                className="px-4 py-2 text-xs font-semibold text-slate-300 hover:text-white bg-slate-800 hover:bg-slate-700 rounded-lg border border-slate-700 transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="button"
+                                disabled={blockLoading}
+                                onClick={handleConfirmBlock}
+                                className={`px-5 py-2 text-xs font-bold text-white rounded-lg shadow-lg flex items-center space-x-2 transition-all ${
+                                    blockModalClient.status === 'Suspended'
+                                        ? 'bg-amber-600 hover:bg-amber-500'
+                                        : 'bg-red-600 hover:bg-red-500 shadow-red-600/30'
+                                }`}
+                            >
+                                {blockLoading ? (
+                                    <>
+                                        <Loader2 size={14} className="animate-spin" />
+                                        <span>Processing...</span>
+                                    </>
+                                ) : (
+                                    <span>
+                                        {blockModalClient.status === 'Suspended' ? 'Yes, Unblock User' : 'Yes, Block User'}
+                                    </span>
+                                )}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Notification Toast */}
+            {blockToast && (
+                <div className={`fixed bottom-6 right-6 z-50 flex items-center space-x-3 px-4 py-3 rounded-lg shadow-2xl border text-sm font-semibold transition-all ${
+                    blockToast.type === 'success'
+                        ? 'bg-emerald-950 text-emerald-200 border-emerald-500/50'
+                        : 'bg-red-950 text-red-200 border-red-500/50'
+                }`}>
+                    {blockToast.type === 'success' ? <CheckCircle2 size={18} className="text-emerald-400" /> : <AlertTriangle size={18} className="text-red-400" />}
+                    <span>{blockToast.message}</span>
                 </div>
             )}
 

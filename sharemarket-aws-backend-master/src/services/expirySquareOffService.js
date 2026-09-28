@@ -64,10 +64,11 @@ const startExpirySquareOffJob = () => {
                 if (!descendantIds.length) continue;
 
                 const [allOpenTrades] = await db.execute(
-                    `SELECT t.*, u.balance, cs.config_json
+                    `SELECT t.*, u.balance, cs.config_json, s.expiry_date AS scrip_expiry_date
                      FROM trades t
                      JOIN users u ON t.user_id = u.id
                      JOIN client_settings cs ON t.user_id = cs.user_id
+                     LEFT JOIN scrip_data s ON t.symbol = s.symbol
                      WHERE t.status = 'OPEN' AND t.is_pending = 0
                      AND t.user_id IN (${descendantIds.join(',')})`
                 );
@@ -93,13 +94,36 @@ const startExpirySquareOffJob = () => {
                         if (isComex && !isComexTriggered) continue;
                         if (isCommodity && !isComexTriggered) continue; 
 
+                        // Check if contract has reached or passed expiry date (BUG 3 FIX)
+                        let isContractExpired = false;
+                        if (trade.scrip_expiry_date) {
+                            const expDate = new Date(trade.scrip_expiry_date);
+                            const today = new Date();
+                            today.setHours(0, 0, 0, 0);
+                            expDate.setHours(0, 0, 0, 0);
+                            if (!isNaN(expDate.getTime()) && expDate <= today) {
+                                isContractExpired = true;
+                            }
+                        }
+
                         const holdingMarginRequired = MarginUtils.calculateTotalRequiredHoldingMargin([trade], userConfig);
 
-                        console.log(`[ExpirySquareOff] 📊 Checking Trade #${trade.id} (${trade.symbol}): Required: ${holdingMarginRequired.toFixed(2)}, Available: ${trade.balance}`);
+                        console.log(`[ExpirySquareOff] 📊 Checking Trade #${trade.id} (${trade.symbol}): Required: ${holdingMarginRequired.toFixed(2)}, Available: ${trade.balance}, Expired: ${isContractExpired}`);
 
                         // ─── FINAL DECISION: SHOULD WE CLOSE? ──────────────────────────
-                        // Only close if available balance is less than required margin
-                        if (parseFloat(trade.balance) < holdingMarginRequired) {
+                        // 1. Compulsory square-off if contract has reached or passed expiry date (regardless of balance)
+                        // 2. OR square-off if available balance is less than required holding margin
+                        if (isContractExpired) {
+                            try {
+                                console.log(`[ExpirySquareOff] 🚨 Compulsory square-off for expired trade #${trade.id} (${trade.symbol}) [Expiry: ${trade.scrip_expiry_date}]`);
+                                const result = await tradeService.closeTrade(trade.id, null, 0, null, 'Contract Expired Square-Off');
+                                if (result.success) {
+                                    console.log(`[ExpirySquareOff] ✅ Squared off expired trade #${trade.id} (${trade.symbol}) @ ${result.exitPrice || 'market'}`);
+                                }
+                            } catch (closeErr) {
+                                console.error(`[ExpirySquareOff] ❌ Failed to auto-close expired trade #${trade.id}:`, closeErr.message);
+                            }
+                        } else if (parseFloat(trade.balance) < holdingMarginRequired) {
                             try {
                                 console.log(`[ExpirySquareOff] 🚨 Closing trade #${trade.id} (${trade.symbol}) due to insufficient margin: Bal=${trade.balance} < Req=${holdingMarginRequired.toFixed(2)}`);
                                 const result = await tradeService.closeTrade(trade.id, null, 0, null, 'Insufficient Holding Margin');

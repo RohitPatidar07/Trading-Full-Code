@@ -32,7 +32,7 @@ const FieldLegend = ({ title, rightControl }) => (
     </div>
 );
 
-const InputField = ({ label, name, value, onChange, type = "text", placeholder, hint }) => (
+const InputField = ({ label, name, value, onChange, type = "text", placeholder, hint, ...rest }) => (
     <div className="mb-6 group px-2">
         <label
             htmlFor={name}
@@ -49,6 +49,7 @@ const InputField = ({ label, name, value, onChange, type = "text", placeholder, 
             onChange={onChange}
             placeholder={placeholder}
             className="w-full bg-transparent border-b border-white/20 py-1 text-white focus:outline-none focus:border-[#4caf50] transition-colors text-[16px]"
+            {...rest}
         />
         {hint && <p id={`${name}-hint`} className="text-[14px] mt-2 font-normal leading-normal" style={{ color: '#BCC0CF', fontFamily: 'Roboto, Helvetica, Arial, sans-serif' }}>{hint}</p>}
     </div>
@@ -775,6 +776,32 @@ const CreateClientPage = ({ client, onClose, onSave, onLogout, onNavigate, isCop
                 setSaveError('❌ Password is required!');
                 setLoading(false);
                 return;
+            }
+
+            // ─── STRICT VALIDATION: Intraday & Holding Exposure Margins must be positive (> 0) ───
+            const exposureChecks = [
+                { key: 'mcxIntradayMargin', label: 'MCX Intraday Exposure', condition: formData.mcxTrading && formData.mcxExposureType !== 'per_lot' },
+                { key: 'mcxHoldingMargin', label: 'MCX Holding Exposure', condition: formData.mcxTrading && formData.mcxExposureType !== 'per_lot' },
+                { key: 'equityIntradayMargin', label: 'Equity Intraday Exposure', condition: formData.equityTrading },
+                { key: 'equityHoldingMargin', label: 'Equity Holding Exposure', condition: formData.equityTrading },
+                { key: 'optionsIndexIntraday', label: 'Options Index Intraday Margin', condition: formData.indexOptionsTrading },
+                { key: 'optionsIndexHolding', label: 'Options Index Holding Margin', condition: formData.indexOptionsTrading },
+                { key: 'optionsEquityIntraday', label: 'Options Equity Intraday Margin', condition: formData.equityOptionsTrading },
+                { key: 'optionsEquityHolding', label: 'Options Equity Holding Margin', condition: formData.equityOptionsTrading },
+                { key: 'optionsMcxIntraday', label: 'Options MCX Intraday Margin', condition: formData.mcxOptionsTrading },
+                { key: 'optionsMcxHolding', label: 'Options MCX Holding Margin', condition: formData.mcxOptionsTrading },
+            ];
+
+            for (const item of exposureChecks) {
+                if (item.condition) {
+                    const rawVal = formData[item.key];
+                    const numVal = parseFloat(rawVal);
+                    if (rawVal === undefined || rawVal === null || String(rawVal).trim() === '' || isNaN(numVal) || numVal <= 0) {
+                        setSaveError(`❌ ${item.label} must be a valid positive number greater than 0. Received: "${rawVal ?? ''}". Zero, negative, and alphabetic values are not allowed.`);
+                        setLoading(false);
+                        return;
+                    }
+                }
             }
 
             // ─── VALIDATE against broker's MCX minimum margins & brokerage ───

@@ -229,7 +229,7 @@ const runMigrations = async () => {
             symbol       VARCHAR(50) NOT NULL,
             type         ENUM('BUY','SELL') NOT NULL,
             order_type   ENUM('MARKET','LIMIT','STOP LOSS') DEFAULT 'MARKET',
-            qty          INT NOT NULL,
+            qty          DECIMAL(18,4) NOT NULL DEFAULT 0.0000,
             entry_price  DECIMAL(18,4) NOT NULL,
             exit_price   DECIMAL(18,4) DEFAULT NULL,
             stop_loss    DECIMAL(18,4) DEFAULT NULL,
@@ -246,6 +246,12 @@ const runMigrations = async () => {
             KEY status (status)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
     `);
+
+    // Ensure qty column in trades table is DECIMAL(18,4) for existing DBs
+    try { await db.execute("ALTER TABLE trades MODIFY COLUMN qty DECIMAL(18,4) NOT NULL DEFAULT 0.0000"); } catch (_) { }
+    try { await db.execute("ALTER TABLE paper_trades MODIFY COLUMN qty DECIMAL(18,4) NOT NULL DEFAULT 0.0000"); } catch (_) { }
+    try { await db.execute("ALTER TABLE paper_positions MODIFY COLUMN quantity DECIMAL(18,4) NOT NULL DEFAULT 0.0000"); } catch (_) { }
+    try { await db.execute("ALTER TABLE paper_orders MODIFY COLUMN qty DECIMAL(18,4) NOT NULL DEFAULT 0.0000"); } catch (_) { }
 
     // Add market_type to trades & scrip_data for existing DBs
     await addColumn('trades', 'market_type', "VARCHAR(50) DEFAULT 'MCX' AFTER is_pending");

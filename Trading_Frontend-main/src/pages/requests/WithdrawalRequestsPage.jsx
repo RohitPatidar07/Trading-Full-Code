@@ -344,9 +344,18 @@ const WithdrawalRequestsPage = () => {
 
     useEffect(() => { applyFilters(); }, [data]);
 
-    const handleAction = async (id, type, meta) => {
+    const handleAction = async (id, type, meta = {}) => {
         try {
-            await updateRequestStatus(id, type, meta.note || meta.rejReason);
+            const statusMap = {
+                'Approved': 'APPROVED',
+                'APPROVED': 'APPROVED',
+                'Rejected': 'REJECTED',
+                'REJECTED': 'REJECTED',
+                'On Hold': 'ON_HOLD',
+                'ON_HOLD': 'ON_HOLD'
+            };
+            const uppercaseStatus = statusMap[type] || (type ? type.toUpperCase() : 'PENDING');
+            await updateRequestStatus(id, uppercaseStatus, meta?.note || meta?.rejReason || '');
             addToast(`Withdrawal ${id} — ${type} successfully!`, type === 'Rejected' ? 'error' : 'success');
             fetchData();
         } catch (err) {

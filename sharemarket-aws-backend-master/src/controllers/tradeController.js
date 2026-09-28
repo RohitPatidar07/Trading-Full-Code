@@ -443,19 +443,16 @@ const placeOrder = async (req, res) => {
             marketType = dbScrip.market_type;
         }
 
-        // ─── PARSE QUANTITY AND PRICE EARLY (needed for validations) ──────────────
-        const qtyNum = Number(qty);
-        if (!Number.isInteger(qtyNum) || qtyNum <= 0) {
-            return res.status(400).json({ success: false, message: 'Quantity must be a positive integer' });
+        const qtyNum = parseFloat(qty);
+        if (isNaN(qtyNum) || qtyNum <= 0) {
+            return res.status(400).json({ success: false, message: 'Quantity must be a positive number' });
         }
 
         const instType = req.body.instrument_type || '';
         const isNSEEq = marketType === 'EQUITY' || (marketType === 'NSE' && instType === 'EQ');
         const isNSEDer = (marketType === 'NSE' || marketType === 'NIFTY' || marketType === 'OPTIONS' || marketType === 'NFO') &&
             ['FUT', 'CE', 'PE', 'OPT'].includes(instType);
-
-
-        const { MCX_LOT_SIZES, getMcxBaseScrip } = require('../utils/symbolHelper');
+        const { MCX_LOT_SIZES, getMcxBaseScrip, getLotSize } = require('../utils/symbolHelper');
         const CommodityLotService = require('../services/CommodityLotService');
 
         let authoritativeLotSize = null;
@@ -465,14 +462,20 @@ const placeOrder = async (req, res) => {
             const baseSym = getMcxBaseScrip(symbol) || symbol.toUpperCase();
             if (MCX_LOT_SIZES[baseSym] && MCX_LOT_SIZES[baseSym] > 0) {
                 authoritativeLotSize = MCX_LOT_SIZES[baseSym];
+            } else {
+                authoritativeLotSize = getLotSize(symbol, marketType);
             }
         } else if (['COMMODITY', 'COMEX', 'FOREX', 'CRYPTO'].includes(marketType)) {
             const commInfo = CommodityLotService.getLotInfo(symbol);
             if (commInfo && commInfo.lot_size > 0) {
                 authoritativeLotSize = commInfo.lot_size;
+            } else {
+                authoritativeLotSize = getLotSize(symbol, marketType);
             }
         } else if (isNSEEq) {
             authoritativeLotSize = 1;
+        } else {
+            authoritativeLotSize = getLotSize(symbol, marketType);
         }
 
         // Fail-Closed Guard: Abort if lot size cannot be authoritatively resolved
@@ -1388,7 +1391,8 @@ const placeOrder = async (req, res) => {
         // EQUITY UNITS/LOTS MODE - Calculate actual_qty based on authoritative DB configuration
         // ═════════════════════════════════════════════════════════════
         const qtyInput = qtyNum;
-        const lotSizeAtEntry = authoritativeLotSize;
+        // Enforce Server-Side Master Lot Size (Do not trust arbitrary client-sent lot size)
+        let lotSizeAtEntry = authoritativeLotSize || ((dbScrip && parseFloat(dbScrip.lot_size) > 0) ? parseFloat(dbScrip.lot_size) : getLotSize(symbol, marketType));
         const isNseEquity = marketType === 'EQUITY' || (marketType === 'NSE' && (req.body.instrument_type || '') === 'EQ');
         const isNseDerivative = (marketType === 'NSE' || marketType === 'NIFTY' || marketType === 'OPTIONS' || marketType === 'NFO') &&
             ['FUT', 'CE', 'PE', 'OPT'].includes(req.body.instrument_type || '');
@@ -2484,6 +2488,7 @@ const closeTrade = async (req, res) => {
     try {
         const { exitPrice, pnl } = req.body;
         const requesterId = req.user.id;
+        const requesterRole = req.user?.role;
 
         // 1. Initial Fetch to check feasibility
         const [trades] = await db.execute('SELECT * FROM trades WHERE id = ?', [req.params.id]);
@@ -2495,6 +2500,41 @@ const closeTrade = async (req, res) => {
                 success: false,
                 message: 'Trade closure is already in progress or trade has already been closed.'
             });
+        }
+
+        // Authorization check: Ensure requester has permission to close this trade
+        if (requesterRole === 'TRADER') {
+            if (trade.user_id !== requesterId) {
+                return res.status(403).json({ message: 'Not authorized to close this trade' });
+            }
+        } else if (requesterRole !== 'SUPERADMIN') {
+            const isTargetUser = trade.user_id === requesterId;
+            const isCreator = trade.created_by === requesterId;
+
+            if (!isTargetUser && !isCreator) {
+                let isAuthorized = false;
+                if (requesterRole === 'ADMIN') {
+                    const [relRows] = await db.execute(
+                        `SELECT u.id FROM users u 
+                         LEFT JOIN client_settings cs ON u.id = cs.user_id 
+                         WHERE u.id = ? AND (u.parent_id = ? OR cs.broker_id IN (SELECT id FROM users WHERE parent_id = ?))`,
+                        [trade.user_id, requesterId, requesterId]
+                    );
+                    isAuthorized = relRows.length > 0;
+                } else if (requesterRole === 'BROKER') {
+                    const [relRows] = await db.execute(
+                        `SELECT u.id FROM users u 
+                         LEFT JOIN client_settings cs ON u.id = cs.user_id 
+                         WHERE u.id = ? AND (u.parent_id = ? OR cs.broker_id = ?)`,
+                        [trade.user_id, requesterId, requesterId]
+                    );
+                    isAuthorized = relRows.length > 0;
+                }
+
+                if (!isAuthorized) {
+                    return res.status(403).json({ message: 'Not authorized to close this trade' });
+                }
+            }
         }
 
         // ─── VALIDATIONS (Min Time / Scalping SL) ─────────────────────────
@@ -2553,7 +2593,6 @@ const closeTrade = async (req, res) => {
             ? (currentPrice - trade.entry_price) * actualQuantity
             : (trade.entry_price - currentPrice) * actualQuantity;
 
-        const requesterRole = req.user?.role;
         const isClient = requesterRole === 'TRADER';
 
         if (!trade.is_pending && isClient && minTimeSeconds > 0 && !scalpingStopLossEnabled && secondsHeld < minTimeSeconds) {
@@ -2565,7 +2604,8 @@ const closeTrade = async (req, res) => {
 
         // ─── EXECUTE CLOSURE VIA SERVICE ──────────────────────────────────
         const closeIp = extractClientIp(req);
-        const result = await tradeService.closeTrade(trade.id, exitPrice, requesterId, pnl, null, closeIp);
+        // Security: Always pass null for pnl so TradeService strictly calculates PnL server-side via formula helpers
+        const result = await tradeService.closeTrade(trade.id, exitPrice, requesterId, null, null, closeIp);
 
         // Send response immediately — don't await paper position sync
         res.json({
@@ -2627,7 +2667,9 @@ const deleteTrade = async (req, res) => {
         if (trade.status === 'DELETED') return res.status(400).json({ message: 'Trade already deleted' });
 
         // Refund: margin + PnL (for CLOSED trades) or just margin (for OPEN trades)
-        const marginToRefund = parseFloat(trade.margin_used || 0);
+        // If trade is pending (is_pending === 1), no margin was deducted so marginToRefund = 0
+        const isPending = trade.is_pending == 1 || trade.is_pending === true;
+        const marginToRefund = isPending ? 0 : parseFloat(trade.margin_used || 0);
         const pnlToRefund = trade.status === 'CLOSED' ? parseFloat(trade.pnl || 0) : 0;
         const balanceRefund = marginToRefund + pnlToRefund;
 
@@ -3199,4 +3241,21 @@ const completePendingOrder = async (req, res) => {
     }
 };
 
-module.exports = { placeOrder, getTrades, getTradeById, getGroupTrades, getActivePositions, closeTrade, deleteTrade, updateTrade, restoreTrade, modifyPendingOrder, setTargetSL, completePendingOrder };
+const squareOffAllTrades = async (req, res) => {
+    try {
+        const userId = req.params.userId;
+        const requesterId = req.user.id;
+        console.log(`🚨 [squareOffAllTrades] Admin #${requesterId} triggered emergency square-off for User #${userId}`);
+        const results = await tradeService.closeAllUserTrades(userId, requesterId, 'EMERGENCY_SQUARE_OFF', 'Admin Emergency Square Off');
+        res.json({
+            message: `Emergency square-off completed for ${results.length} trades`,
+            tradesClosed: results.length,
+            results
+        });
+    } catch (err) {
+        console.error('Square-Off All Trades Error:', err);
+        res.status(500).json({ message: 'Failed to square-off all positions', error: err.message });
+    }
+};
+
+module.exports = { placeOrder, getTrades, getTradeById, getGroupTrades, getActivePositions, closeTrade, deleteTrade, updateTrade, restoreTrade, modifyPendingOrder, setTargetSL, completePendingOrder, squareOffAllTrades };

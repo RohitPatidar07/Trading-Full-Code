@@ -111,7 +111,7 @@ const executeAddFund = async (query, parsed, reqUser) => {
     try {
         await connection.beginTransaction();
 
-        // Verify user exists with row lock
+        // Verify user exists and lock row
         const [rows] = await connection.execute('SELECT id, balance, full_name FROM users WHERE id = ? FOR UPDATE', [userId]);
         if (!rows.length) {
             await connection.rollback();
@@ -201,6 +201,7 @@ const executeWithdraw = async (query, parsed, reqUser) => {
         const [freshUserRows] = await connection.execute('SELECT balance FROM users WHERE id = ?', [userId]);
         const newBalance = parseFloat(freshUserRows[0]?.balance || 0);
 
+
         await connection.execute(
             'INSERT INTO ledger (user_id, amount, type, balance_after, remarks) VALUES (?, ?, ?, ?, ?)',
             [userId, amount, 'WITHDRAW', newBalance, `AI Command: Fund withdrawn by ${reqUser?.full_name || 'system'}`]
@@ -266,13 +267,14 @@ const executeTransfer = async (query, parsed, reqUser) => {
             return buildResponse('error', `Insufficient balance. ${fromRows[0].full_name || 'User ' + fromUserId} has ₹${fromBal}`, null, { module: 'funds' });
         }
 
+
         const [deductRes] = await connection.execute(
             'UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?',
             [amount, fromUserId, amount]
         );
         if (deductRes.affectedRows === 0) {
             await connection.rollback();
-            return buildResponse('error', 'Insufficient balance', null, { module: 'funds' });
+            return buildResponse('error', 'Insufficient balance or concurrent transaction conflict', null, { module: 'funds' });
         }
         await connection.execute('UPDATE users SET balance = balance + ? WHERE id = ?', [amount, toUserId]);
 

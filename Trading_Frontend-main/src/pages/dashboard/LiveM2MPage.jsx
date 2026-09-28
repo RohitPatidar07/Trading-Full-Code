@@ -1,6 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import SegmentDashboard from '../../components/dashboard/SegmentDashboard';
 import * as api from '../../services/api';
+import * as XLSX from 'xlsx';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
+import { FileSpreadsheet, FileText } from 'lucide-react';
 
 const LiveM2MPage = ({ onNavigate, user }) => {
   const isClient = user?.role === 'TRADER';
@@ -9,6 +13,8 @@ const LiveM2MPage = ({ onNavigate, user }) => {
   const [loading, setLoading] = useState(true);
   const [prevPL, setPrevPL] = useState({});
   const [flashes, setFlashes] = useState({});
+  const [scrollTop, setScrollTop] = useState(0);
+  const tableContainerRef = useRef(null);
 
   useEffect(() => {
     fetchM2M();
@@ -154,31 +160,154 @@ const LiveM2MPage = ({ onNavigate, user }) => {
 
   const isAdminOrSuper = user?.role === 'SUPERADMIN' || user?.role === 'ADMIN';
 
+  // Bug 4: Account Health Status calculation
+  const getRiskStatus = (client) => {
+    if (client.riskStatus) return client.riskStatus;
+    if (client.status === 'Suspended' || client.is_squared_off || client.squaredOff) {
+      return 'SQUARED OFF';
+    }
+    const marginUsed = parseFloat(client.marginUsed || 0);
+    const marginLimit = parseFloat(client.margin || client.creditLimit || 0);
+    const shortfall = parseFloat(client.marginShortfall || 0);
+    if (shortfall > 0 || (marginLimit > 0 && marginUsed >= marginLimit * 0.9)) {
+      return 'MARGIN CALL';
+    }
+    return 'HEALTHY';
+  };
+
+  // Bug 5: Excel (.xlsx) Export
+  const handleExportExcel = () => {
+    if (!clients || clients.length === 0) return;
+    const exportData = clients.map(c => ({
+      'User ID': c.id,
+      'Username': c.username,
+      'Role': c.role || 'BROKER',
+      'Account Health': getRiskStatus(c),
+      'Active Profit/Loss': parseFloat(c.activePL || 0).toFixed(2),
+      'Active Trades': c.activeTrades || 0,
+      'Margin Used': parseFloat(c.marginUsed || 0).toFixed(2)
+    }));
+
+    const worksheet = XLSX.utils.json_to_sheet(exportData);
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Live M2M');
+    XLSX.writeFile(workbook, `Live_M2M_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  // Bug 5: PDF Export
+  const handleExportPDF = () => {
+    if (!clients || clients.length === 0) return;
+    const doc = new jsPDF('p', 'pt', 'a4');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(14);
+    doc.text('LIVE M2M REPORT', 40, 40);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+    const accountName = isAdminOrSuper
+      ? 'SHRI SHRI NATHJI TRADERS'
+      : (user?.fullName || user?.username || '').toUpperCase();
+    doc.text(`Account: ${accountName} | Generated: ${new Date().toLocaleString()}`, 40, 56);
+
+    const tableRows = clients.map(c => [
+      `${c.id} : ${c.username}`,
+      c.role || 'BROKER',
+      getRiskStatus(c),
+      parseFloat(c.activePL || 0).toFixed(2),
+      c.activeTrades || 0,
+      parseFloat(c.marginUsed || 0).toFixed(2)
+    ]);
+
+    autoTable(doc, {
+      head: [['Trader / Broker', 'Role', 'Account Health', 'Active P/L', 'Trades', 'Margin Used']],
+      body: tableRows,
+      startY: 70,
+      theme: 'grid',
+      headStyles: { fillColor: [40, 140, 108], textColor: 255, fontStyle: 'bold' },
+      styles: { fontSize: 9 }
+    });
+
+    doc.save(`Live_M2M_${new Date().toISOString().slice(0, 10)}.pdf`);
+  };
+
+  // Bug 1: Virtualization calculation for 500+ traders
+  const ROW_HEIGHT = 48;
+  const OVERSCAN = 10;
+  const VIEWPORT_HEIGHT = 500;
+
+  const { visibleClients, startIndex, topPadding, bottomPadding } = useMemo(() => {
+    const total = clients.length;
+    if (total <= 30) {
+      return {
+        visibleClients: clients,
+        startIndex: 0,
+        topPadding: 0,
+        bottomPadding: 0
+      };
+    }
+    const start = Math.max(0, Math.floor(scrollTop / ROW_HEIGHT) - OVERSCAN);
+    const end = Math.min(total, Math.ceil((scrollTop + VIEWPORT_HEIGHT) / ROW_HEIGHT) + OVERSCAN);
+    return {
+      visibleClients: clients.slice(start, end),
+      startIndex: start,
+      topPadding: start * ROW_HEIGHT,
+      bottomPadding: Math.max(0, (total - end) * ROW_HEIGHT)
+    };
+  }, [clients, scrollTop]);
+
+  const handleTableScroll = (e) => {
+    setScrollTop(e.currentTarget.scrollTop);
+  };
+
   return (
     <div className="flex flex-col h-full bg-[#1a2035] px-2 sm:px-3 md:px-4 py-2 sm:py-3 md:py-4 gap-y-14 md:gap-y-12 overflow-y-auto custom-scrollbar pb-10">
 
       {/* 1. Live M2M Table Section */}
       <div className="relative mt-6">
         <div className="bg-[#1f283e] rounded-md shadow-2xl relative pt-12">
-          {/* Table Offset Header */}
+          {/* Table Offset Header Ribbon with Bug 5 Export Controls */}
           <div
-            className="absolute -top-6 left-4 rounded-md shadow-[0_4px_20px_0_rgba(0,0,0,0.14),0_7px_10px_-5px_rgba(76,175,80,0.4)] px-4 sm:px-6 md:px-10 py-3 sm:py-4 md:py-5 z-10 w-[calc(100%-32px)]"
+            className="absolute -top-6 left-4 rounded-md shadow-[0_4px_20px_0_rgba(0,0,0,0.14),0_7px_10px_-5px_rgba(76,175,80,0.4)] px-4 sm:px-6 md:px-8 py-3 sm:py-4 z-10 w-[calc(100%-32px)] flex flex-wrap items-center justify-between gap-3"
             style={{ background: 'linear-gradient(60deg, #288c6c, #4ea752)' }}
           >
             <h2 className="text-white text-base font-bold uppercase tracking-tight">
               {isAdminOrSuper ? 'Live M2M under: SHRI SHRI NATHJI TRADERS' : `Live M2M under: ${(user?.fullName || user?.username || '').toUpperCase().replace('VIKRAM', 'SHRI SHRI NATHJI')}`}
             </h2>
+            <div className="flex items-center space-x-2">
+              <button
+                type="button"
+                onClick={handleExportExcel}
+                className="flex items-center space-x-1.5 px-3 py-1.5 bg-black/25 hover:bg-black/40 text-white rounded-md text-xs font-bold transition-all shadow-sm border border-white/20 hover:border-white/40 cursor-pointer"
+                title="Export to Excel (.xlsx)"
+              >
+                <FileSpreadsheet size={14} className="text-emerald-200" />
+                <span>Export to Excel (.xlsx)</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleExportPDF}
+                className="flex items-center space-x-1.5 px-3 py-1.5 bg-black/25 hover:bg-black/40 text-white rounded-md text-xs font-bold transition-all shadow-sm border border-white/20 hover:border-white/40 cursor-pointer"
+                title="Export to PDF"
+              >
+                <FileText size={14} className="text-red-200" />
+                <span>Export to PDF</span>
+              </button>
+            </div>
           </div>
 
-          <div className="px-6 py-4 overflow-x-auto">
+          {/* Bug 1: Virtualized Scroll Container */}
+          <div
+            ref={tableContainerRef}
+            onScroll={handleTableScroll}
+            className="px-6 py-4 overflow-x-auto max-h-[560px] overflow-y-auto custom-scrollbar relative"
+          >
             <table className="w-full text-left border-collapse whitespace-nowrap">
-              <thead className="border-b border-white/5">
+              <thead className="sticky top-0 bg-[#1f283e] z-10 border-b border-white/5 shadow-sm">
                 <tr className="text-white text-[12px] font-normal uppercase tracking-widest">
-                  <th className="px-4 py-4">User ID</th>
-                  <th className="px-4 py-4">Role</th>
-                  <th className="px-4 py-4">Active Profit/Loss</th>
-                  <th className="px-4 py-4">Active Trades</th>
-                  <th className="px-4 py-4 text-right">Margin Used</th>
+                  <th className="px-4 py-4 bg-[#1f283e]">User ID</th>
+                  <th className="px-4 py-4 bg-[#1f283e]">Role & Health</th>
+                  <th className="px-4 py-4 bg-[#1f283e]">Active Profit/Loss</th>
+                  <th className="px-4 py-4 bg-[#1f283e]">Active Trades</th>
+                  <th className="px-4 py-4 text-right bg-[#1f283e]">Margin Used</th>
                 </tr>
               </thead>
               <tbody className="text-[13px] text-slate-300">
@@ -186,53 +315,83 @@ const LiveM2MPage = ({ onNavigate, user }) => {
                   <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-500">Loading...</td></tr>
                 ) : clients.length === 0 ? (
                   <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-500">{isAdminOrSuper ? 'No active brokers' : 'No active traders'}</td></tr>
-                ) : clients.map((client, index) => {
-                  const key = client.id || client.username;
-                  const flash = flashes[key];
+                ) : (
+                  <>
+                    {/* Top Virtual Spacer */}
+                    {topPadding > 0 && (
+                      <tr style={{ height: `${topPadding}px` }} aria-hidden="true">
+                        <td colSpan={5} className="p-0 border-0" />
+                      </tr>
+                    )}
+                    {visibleClients.map((client, index) => {
+                      const actualIndex = startIndex + index;
+                      const key = client.id || client.username;
+                      const flash = flashes[key];
+                      const riskStatus = getRiskStatus(client);
 
-                  return (
-                    <tr key={client.id || index} className="border-b border-white/5 hover:bg-white/5 transition-colors">
-                      <td className="px-4 py-3">
-                        <button
-                          onClick={() => onNavigate(`dashboard-detail/${client.id}`, client)}
-                          className="inline-block px-4 py-1 rounded-full text-[11px] font-bold text-white shadow-[0_4px_10px_rgba(76,175,80,0.4)] hover:shadow-[0_4px_20px_rgba(76,175,80,0.6)] transition-all cursor-pointer border border-white/10"
-                          style={{ background: 'linear-gradient(60deg, #288c6c, #4ea752)' }}
-                        >
-                          {client.id} : {client.username}
-                        </button>
-                      </td>
-                      <td className="px-4 py-4">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${client.role === 'ADMIN'
-                          ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
-                          : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                          }`}>
-                          {client.role || 'BROKER'}
-                        </span>
-                      </td>
-                      <td className="px-4 py-4">
-                        <span className={`inline-block px-3 py-1 rounded font-black tabular-nums text-xs sm:text-sm border transition-all duration-300 ${flash === 'up' ? 'flash-up' : flash === 'down' ? 'flash-down' : ''} ${parseFloat(client.activePL) >= 0 
-                          ? 'bg-green-500/10 text-green-400 border-green-500/20' 
-                          : 'bg-red-500/10 text-red-400 border-red-500/20'
-                          }`}>
-                          {parseFloat(client.activePL || 0).toFixed(2)}
-                        </span>
-                      </td>
-                      <td className="px-4 py-4">{client.activeTrades || 0}</td>
-                      <td className="px-4 py-4 text-right font-bold">
-                        {parseFloat(client.marginUsed || 0).toFixed(2)}
-                      </td>
-                    </tr>
-                  );
-                })}
+                      return (
+                        <tr key={client.id || actualIndex} className="border-b border-white/5 hover:bg-white/5 transition-colors h-[48px]">
+                          <td className="px-4 py-2">
+                            <button
+                              onClick={() => onNavigate(`dashboard-detail/${client.id}`, client)}
+                              className="inline-block px-4 py-1 rounded-full text-[11px] font-bold text-white shadow-[0_4px_10px_rgba(76,175,80,0.4)] hover:shadow-[0_4px_20px_rgba(76,175,80,0.6)] transition-all cursor-pointer border border-white/10"
+                              style={{ background: 'linear-gradient(60deg, #288c6c, #4ea752)' }}
+                            >
+                              {client.id} : {client.username}
+                            </button>
+                          </td>
+                          <td className="px-4 py-2">
+                            <div className="flex items-center space-x-2">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${client.role === 'ADMIN'
+                                ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
+                                : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                                }`}>
+                                {client.role || 'BROKER'}
+                              </span>
+                              {/* Bug 4: Account Health Color Badges */}
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider border ${
+                                riskStatus === 'SQUARED OFF'
+                                  ? 'bg-red-500/20 text-red-400 border-red-500/30'
+                                  : riskStatus === 'MARGIN CALL'
+                                    ? 'bg-amber-500/20 text-amber-400 border-amber-500/30'
+                                    : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
+                              }`}>
+                                {riskStatus}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-2">
+                            <span className={`inline-block px-3 py-1 rounded font-black tabular-nums text-xs sm:text-sm border transition-all duration-300 ${flash === 'up' ? 'flash-up' : flash === 'down' ? 'flash-down' : ''} ${parseFloat(client.activePL) >= 0 
+                              ? 'bg-green-500/10 text-green-400 border-green-500/20' 
+                              : 'bg-red-500/10 text-red-400 border-red-500/20'
+                              }`}>
+                              {parseFloat(client.activePL || 0).toFixed(2)}
+                            </span>
+                          </td>
+                          <td className="px-4 py-2">{client.activeTrades || 0}</td>
+                          <td className="px-4 py-2 text-right font-bold">
+                            {parseFloat(client.marginUsed || 0).toFixed(2)}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {/* Bottom Virtual Spacer */}
+                    {bottomPadding > 0 && (
+                      <tr style={{ height: `${bottomPadding}px` }} aria-hidden="true">
+                        <td colSpan={5} className="p-0 border-0" />
+                      </tr>
+                    )}
+                  </>
+                )}
                 {!loading && clients.length > 0 && (
-                  <tr className="bg-black/10 font-bold text-white uppercase text-[11px] tracking-widest">
-                    <td className="px-4 py-4">Total</td>
-                    <td className="px-4 py-4"></td>
-                    <td className={`px-4 py-4 ${clients.reduce((s, c) => s + parseFloat(c.activePL || 0), 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
+                  <tr className="bg-black/20 font-bold text-white uppercase text-[11px] tracking-widest sticky bottom-0 border-t-2 border-white/10">
+                    <td className="px-4 py-3 bg-[#171e2e]">Total</td>
+                    <td className="px-4 py-3 bg-[#171e2e]"></td>
+                    <td className={`px-4 py-3 bg-[#171e2e] ${clients.reduce((s, c) => s + parseFloat(c.activePL || 0), 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
                       {clients.reduce((s, c) => s + parseFloat(c.activePL || 0), 0).toFixed(2)}
                     </td>
-                    <td className="px-4 py-4">{clients.reduce((s, c) => s + parseInt(c.activeTrades || 0), 0)}</td>
-                    <td className="px-4 py-4 text-right font-bold">
+                    <td className="px-4 py-3 bg-[#171e2e]">{clients.reduce((s, c) => s + parseInt(c.activeTrades || 0), 0)}</td>
+                    <td className="px-4 py-3 text-right font-bold bg-[#171e2e]">
                       {clients.reduce((s, c) => s + parseFloat(c.marginUsed || 0), 0).toFixed(2)}
                     </td>
                   </tr>

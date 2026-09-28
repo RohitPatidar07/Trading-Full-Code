@@ -35,8 +35,14 @@ class RMSService {
                 WHERE t.status = 'OPEN' AND u.role = 'TRADER'
             `);
 
-            for (const user of users) {
-                await this.processUserRisk(user);
+            // Process users in concurrent batches of 50 to avoid blocking the event loop (BUG 5 FIX)
+            const CHUNK_SIZE = 50;
+            for (let i = 0; i < users.length; i += CHUNK_SIZE) {
+                const chunk = users.slice(i, i + CHUNK_SIZE);
+                await Promise.all(chunk.map(user => this.processUserRisk(user)));
+                if (i + CHUNK_SIZE < users.length) {
+                    await new Promise(resolve => setImmediate(resolve));
+                }
             }
         } catch (err) {
             console.error('[RMSService] Global check error:', err.message);
@@ -47,9 +53,9 @@ class RMSService {
 
     async processUserRisk(user) {
         try {
-            // 1. Get all open trades for this user
+            // 1. Get all open trades for this user with actual_qty, lot_size_at_entry and master_lot_size (BUG 1 FIX)
             const [trades] = await db.execute(
-                "SELECT id, symbol, type, qty, entry_price, market_type, last_market_price, is_carried_forward, last_settlement_price FROM trades WHERE user_id = ? AND status = 'OPEN' AND is_pending = 0",
+                "SELECT t.id, t.symbol, t.type, t.qty, t.actual_qty, t.lot_size_at_entry, t.equity_units_mode, t.entry_price, t.market_type, t.last_market_price, t.is_carried_forward, t.status, t.last_settlement_price, s.lot_size AS master_lot_size FROM trades t LEFT JOIN scrip_data s ON t.symbol = s.symbol WHERE t.user_id = ? AND t.status = 'OPEN' AND t.is_pending = 0",
                 [user.id]
             );
 
@@ -59,8 +65,10 @@ class RMSService {
             let config = {};
             try { config = JSON.parse(user.config_json || '{}'); } catch (e) { }
 
-            // Respect the "Auto Close Trades if condition met" checkbox (isAutoCloseEnabled)
-            const isAutoCloseActive = config.autoCloseEnabled !== false;
+            // Respect the "Auto Close Trades if condition met" checkbox (BUG 2 FIX)
+            const isAutoCloseActive = config.autoCloseTrades !== undefined 
+                ? (config.autoCloseTrades === true || config.autoCloseTrades === 1 || config.autoCloseTrades === 'true')
+                : (config.autoCloseEnabled !== false);
 
             // 3. Calculate Total Floating PnL
             let totalPnL = 0;
@@ -106,9 +114,15 @@ class RMSService {
                     const calc = commodityLotService.calculatePnL(trade.symbol, trade.type, baselinePrice, currentPrice, trade.qty);
                     pnl = calc.pnlInr;
                 } else {
+                    // Accurately resolve actual quantity using lot size (BUG 1 FIX)
+                    const effectiveLotSize = parseFloat(trade.lot_size_at_entry || trade.master_lot_size || 1) || 1;
+                    const effectiveQty = (trade.actual_qty && parseFloat(trade.actual_qty) > 0)
+                        ? parseFloat(trade.actual_qty)
+                        : (trade.equity_units_mode === 1 ? parseFloat(trade.qty) : parseFloat(trade.qty) * effectiveLotSize);
+
                     pnl = trade.type === 'BUY'
-                        ? (currentPrice - baselinePrice) * trade.qty
-                        : (baselinePrice - currentPrice) * trade.qty;
+                        ? (currentPrice - baselinePrice) * effectiveQty
+                        : (baselinePrice - currentPrice) * effectiveQty;
                 }
 
                 totalPnL += pnl;

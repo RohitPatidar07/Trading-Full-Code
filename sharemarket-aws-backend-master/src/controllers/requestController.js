@@ -58,7 +58,12 @@ const getRequests = async (req, res) => {
 
 const updateRequestStatus = async (req, res) => {
     const { id } = req.params;
-    const { status, remark } = req.body; // status: APPROVED, REJECTED
+    const { status, remark } = req.body; // status: APPROVED, REJECTED, ON_HOLD
+
+    const normalizedStatus = (status || '').toString().trim().toUpperCase();
+    if (!normalizedStatus) {
+        return res.status(400).json({ message: 'Status is required' });
+    }
 
     const connection = await db.getConnection();
     try {
@@ -69,12 +74,14 @@ const updateRequestStatus = async (req, res) => {
         if (requests.length === 0) throw new Error('Request not found or already processed');
         const request = requests[0];
 
-        if (status === 'APPROVED') {
+        const finalStatus = normalizedStatus || status;
+        if (finalStatus === 'APPROVED') {
             // 2. Get User Details with row lock to prevent race condition
             const [userRows] = await connection.execute('SELECT balance FROM users WHERE id = ? FOR UPDATE', [request.user_id]);
             if (!userRows.length) throw new Error('User not found');
             const user = userRows[0];
-            const currentBal = parseFloat(user.balance || 0);
+            const balanceBefore = parseFloat(user.balance || 0);
+            const currentBal = balanceBefore;
             const reqAmt = parseFloat(request.amount);
 
             if (request.type === 'WITHDRAW') {
@@ -84,7 +91,7 @@ const updateRequestStatus = async (req, res) => {
                 const clientConfig = settings.length > 0 ? JSON.parse(settings[0].config_json || '{}') : {};
 
                 const blockedMargin = MarginUtils.calculateTotalRequiredHoldingMargin(trades, clientConfig);
-                const withdrawable = currentBal - blockedMargin;
+                const withdrawable = balanceBefore - blockedMargin;
 
                 if (reqAmt > withdrawable) {
                     throw new Error(`Insufficient Withdrawable Balance. Required Holding Margin: ₹${blockedMargin.toFixed(2)}, Available to Withdraw: ₹${withdrawable.toFixed(2)}`);
@@ -95,7 +102,7 @@ const updateRequestStatus = async (req, res) => {
                     [reqAmt, request.user_id, reqAmt]
                 );
                 if (deductRes.affectedRows === 0) {
-                    throw new Error('Insufficient balance');
+                    throw new Error('Insufficient balance or concurrent transaction in progress');
                 }
             } else {
                 await connection.execute('UPDATE users SET balance = balance + ? WHERE id = ?', [reqAmt, request.user_id]);
@@ -105,20 +112,47 @@ const updateRequestStatus = async (req, res) => {
             const [updatedUserRows] = await connection.execute('SELECT balance FROM users WHERE id = ?', [request.user_id]);
             const newBalance = parseFloat(updatedUserRows[0]?.balance || 0);
 
-            // 4. Record in Ledger
+            // 4. Record in Ledger with full double-entry consistency
             await connection.execute(
-                'INSERT INTO ledger (user_id, amount, type, balance_after, remarks) VALUES (?, ?, ?, ?, ?)',
-                [request.user_id, reqAmt, request.type, newBalance, remark || `Request Approved: ${request.type}`]
+                `INSERT INTO ledger (user_id, amount, type, balance_before, balance_after, reference_id, reference_type, remarks, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, 'PAYMENT_REQUEST', ?, NOW())`,
+                [
+                    request.user_id,
+                    reqAmt,
+                    request.type,
+                    balanceBefore,
+                    newBalance,
+                    String(request.id),
+                    remark || `Payment Request Approved: ${request.type} #${request.id}`
+                ]
             );
+
+            // Invalidate user balance caches
+            try {
+                const { invalidateCache } = require('../utils/cacheManager');
+                await invalidateCache(`users_${request.user_id}_all`);
+                await invalidateCache(`users_${request.user_id}_TRADER`);
+                await invalidateCache(`funds_${request.user_id}_*`);
+            } catch (cacheErr) {
+                console.warn('[Cache] Invalidation warning:', cacheErr.message);
+            }
         }
 
         // 5. Update Request Status
-        await connection.execute('UPDATE payment_requests SET status = ?, admin_remarks = ?, admin_id = ? WHERE id = ?', [status, remark, req.user.id, id]);
+        await connection.execute('UPDATE payment_requests SET status = ?, admin_remarks = ?, admin_id = ? WHERE id = ?', [normalizedStatus, remark, req.user.id, id]);
 
         await connection.commit();
-        await logAction(req.user.id, `${status}_PAYMENT`, 'payment_requests', `${status} ${request.type} of ${request.amount} for user ID ${request.user_id}`);
-        
-        res.json({ message: `Request ${status.toLowerCase()}` });
+        await logAction(req.user.id, `${finalStatus}_PAYMENT`, 'payment_requests', `${finalStatus} ${request.type} of ${request.amount} for user ID ${request.user_id}`);
+
+        // Invalidate cache
+        try {
+            const { invalidateCache } = require('../utils/cacheManager');
+            await invalidateCache(`users_${request.user_id}_*`);
+            await invalidateCache(`funds_${request.user_id}_*`);
+            await invalidateCache(`m2m_${request.user_id}_*`);
+        } catch (_) {}
+
+        res.json({ message: `Request ${finalStatus.toLowerCase()}` });
     } catch (err) {
         await connection.rollback();
         console.error(err);
