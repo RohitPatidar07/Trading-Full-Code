@@ -2073,6 +2073,10 @@ const getTrades = async (req, res) => {
                             }
                         }
 
+                        if (!currentPrice && trade.last_market_price !== null && trade.last_market_price !== undefined && parseFloat(trade.last_market_price) > 0) {
+                            currentPrice = parseFloat(trade.last_market_price);
+                        }
+
                         if (currentPrice) {
                             const baselinePrice = (trade.is_carried_forward || trade.status === 'HOLD') && trade.last_settlement_price !== null && trade.last_settlement_price !== undefined
                                 ? parseFloat(trade.last_settlement_price)
@@ -2527,7 +2531,17 @@ const closeTrade = async (req, res) => {
             }
         }
 
-        const currentPrice = exitPrice || livePriceForClose || trade.entry_price;
+        let currentPrice = exitPrice ? parseFloat(exitPrice) : (livePriceForClose ? parseFloat(livePriceForClose) : null);
+        if (!currentPrice && trade.last_market_price !== null && trade.last_market_price !== undefined && parseFloat(trade.last_market_price) > 0) {
+            currentPrice = parseFloat(trade.last_market_price);
+        }
+
+        // 🛑 SAFETY: If no valid exit or market price is found, do NOT fabricate entry_price. Reject close with clear error.
+        if (!currentPrice || currentPrice <= 0) {
+            return res.status(400).json({
+                message: `Live market price is currently unavailable for ${trade.symbol}. Trade cannot be closed at an invalid price. Please try again when the market feed is active.`
+            });
+        }
         const actualQuantity = trade.actual_qty || (trade.qty * lotSize);
         const validationPnl = trade.type === 'BUY'
             ? (currentPrice - trade.entry_price) * actualQuantity

@@ -288,11 +288,27 @@ class TradeService {
                         const cachedPrice = trade.type === 'BUY' ? cachedBidAsk.bid : cachedBidAsk.ask;
                         finalExitPrice = cachedPrice;
                         console.log(`[TradeService] ✅ Using cached bid/ask from ${cachedBidAsk.timestamp}: ${finalExitPrice} (Bid: ${cachedBidAsk.bid}, Ask: ${cachedBidAsk.ask})`);
+                    } else if (trade.last_market_price !== null && trade.last_market_price !== undefined && parseFloat(trade.last_market_price) > 0) {
+                        finalExitPrice = parseFloat(trade.last_market_price);
+                        console.log(`[TradeService] ✅ Using trade.last_market_price: ${finalExitPrice}`);
                     } else {
-                        // 🎯 4. Final Fallback (Entry Price) - only if no cache available
-                        finalExitPrice = trade.entry_price;
-                        console.warn(`[TradeService] ⚠️ No cached bid/ask and no live price, using Entry Price: ${finalExitPrice}`);
+                        // Check scrip_data.last_price
+                        try {
+                            const cleanSym = trade.symbol.includes(':') ? trade.symbol.split(':')[1] : trade.symbol;
+                            const [scripRows] = await connection.execute('SELECT last_price FROM scrip_data WHERE symbol = ? OR symbol = ? LIMIT 1', [trade.symbol, cleanSym]);
+                            if (scripRows.length > 0 && parseFloat(scripRows[0].last_price) > 0) {
+                                finalExitPrice = parseFloat(scripRows[0].last_price);
+                                console.log(`[TradeService] ✅ Using scrip_data.last_price: ${finalExitPrice}`);
+                            }
+                        } catch (e) {
+                            console.warn('[TradeService] Error fetching scrip_data.last_price:', e.message);
+                        }
                     }
+                }
+
+                // 🛑 CRITICAL SAFETY: Never silently close an open trade at entry_price if no market price is found.
+                if (!finalExitPrice || finalExitPrice <= 0) {
+                    throw new Error(`Live market price is currently unavailable for ${trade.symbol}. Trade cannot be closed at an invalid price. Please try again when the market feed is active.`);
                 }
             }
 
