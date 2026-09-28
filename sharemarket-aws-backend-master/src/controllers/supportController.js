@@ -65,7 +65,7 @@ const getTickets = async (req, res) => {
                         (SELECT COUNT(*) FROM ticket_messages tm 
                          WHERE tm.ticket_id = t.id AND tm.sender_id != ? 
                            AND (NOT EXISTS (SELECT 1 FROM ticket_read_status trs WHERE trs.ticket_id = t.id AND trs.user_id = ?) 
-                                OR tm.created_at > (SELECT last_read_at FROM ticket_read_status trs WHERE trs.ticket_id = t.id AND trs.user_id = ?))) AS unread_count
+                                OR tm.created_at > (SELECT MAX(last_read_at) FROM ticket_read_status trs WHERE trs.ticket_id = t.id AND trs.user_id = ?))) AS unread_count
                  FROM support_tickets t
                  JOIN users u ON t.user_id = u.id
                  ORDER BY t.created_at DESC`,
@@ -80,7 +80,7 @@ const getTickets = async (req, res) => {
                         (SELECT COUNT(*) FROM ticket_messages tm 
                          WHERE tm.ticket_id = t.id AND tm.sender_id != ? 
                            AND (NOT EXISTS (SELECT 1 FROM ticket_read_status trs WHERE trs.ticket_id = t.id AND trs.user_id = ?) 
-                                OR tm.created_at > (SELECT last_read_at FROM ticket_read_status trs WHERE trs.ticket_id = t.id AND trs.user_id = ?))) AS unread_count
+                                OR tm.created_at > (SELECT MAX(last_read_at) FROM ticket_read_status trs WHERE trs.ticket_id = t.id AND trs.user_id = ?))) AS unread_count
                  FROM support_tickets t
                  JOIN users u ON t.user_id = u.id
                  WHERE t.user_id IN (${placeholders})
@@ -93,7 +93,7 @@ const getTickets = async (req, res) => {
                         (SELECT COUNT(*) FROM ticket_messages tm 
                          WHERE tm.ticket_id = t.id AND tm.sender_id != ? 
                            AND (NOT EXISTS (SELECT 1 FROM ticket_read_status trs WHERE trs.ticket_id = t.id AND trs.user_id = ?) 
-                                OR tm.created_at > (SELECT last_read_at FROM ticket_read_status trs WHERE trs.ticket_id = t.id AND trs.user_id = ?))) AS unread_count
+                                OR tm.created_at > (SELECT MAX(last_read_at) FROM ticket_read_status trs WHERE trs.ticket_id = t.id AND trs.user_id = ?))) AS unread_count
                  FROM support_tickets t
                  JOIN users u ON t.user_id = u.id
                  WHERE t.user_id = ?
