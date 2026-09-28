@@ -3,10 +3,11 @@ const axios = require('axios');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
-const token = jwt.sign({ id: 1, username: 'superadmin', role: 'SUPERADMIN' }, process.env.JWT_SECRET, { expiresIn: '1h' });
+const token = jwt.sign({ id: 1, username: 'superadmin', role: 'SUPERADMIN' }, process.env.JWT_SECRET || 'your_jwt_secret_key_123', { expiresIn: '1h' });
 const client = axios.create({
     baseURL: 'http://localhost:5000/api',
-    headers: { Authorization: 'Bearer ' + token }
+    headers: { Authorization: 'Bearer ' + token },
+    timeout: 5000
 });
 
 async function runTests() {
@@ -14,6 +15,15 @@ async function runTests() {
     console.log('   RUNNING INTERNAL TRANSFER TEST SUITE');
     console.log('============================================');
     
+    // Check if backend is alive first
+    try {
+        await axios.get('http://localhost:5000/health', { timeout: 3000 });
+    } catch(err) {
+        console.error('\n❌ ERROR: Backend server is not running on http://localhost:5000!');
+        console.error('Please make sure backend is started first: "npm run dev"\n');
+        process.exit(1);
+    }
+
     let passed = 0;
     let failed = 0;
 

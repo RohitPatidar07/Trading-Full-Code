@@ -262,6 +262,10 @@ const updateFund = async (req, res) => {
         const old = rows[0];
         const oldAmount = parseFloat(old.amount);
         const newAmount = parseFloat(amount);
+        if (isNaN(newAmount) || !isFinite(newAmount) || newAmount <= 0) {
+            await connection.rollback();
+            return res.status(400).json({ message: 'Amount must be a positive number greater than 0' });
+        }
         const newType = mode === 'deposit' ? 'DEPOSIT' : 'WITHDRAW';
 
         // 2. Reverse old balance effect
