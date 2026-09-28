@@ -2490,6 +2490,7 @@ const closeTrade = async (req, res) => {
     try {
         const { exitPrice, pnl } = req.body;
         const requesterId = req.user.id;
+        const requesterRole = req.user?.role;
 
         // 1. Initial Fetch to check feasibility
         const [trades] = await db.execute('SELECT * FROM trades WHERE id = ?', [req.params.id]);
@@ -2501,6 +2502,41 @@ const closeTrade = async (req, res) => {
                 success: false,
                 message: 'Trade closure is already in progress or trade has already been closed.'
             });
+        }
+
+        // Authorization check: Ensure requester has permission to close this trade
+        if (requesterRole === 'TRADER') {
+            if (trade.user_id !== requesterId) {
+                return res.status(403).json({ message: 'Not authorized to close this trade' });
+            }
+        } else if (requesterRole !== 'SUPERADMIN') {
+            const isTargetUser = trade.user_id === requesterId;
+            const isCreator = trade.created_by === requesterId;
+
+            if (!isTargetUser && !isCreator) {
+                let isAuthorized = false;
+                if (requesterRole === 'ADMIN') {
+                    const [relRows] = await db.execute(
+                        `SELECT u.id FROM users u 
+                         LEFT JOIN client_settings cs ON u.id = cs.user_id 
+                         WHERE u.id = ? AND (u.parent_id = ? OR cs.broker_id IN (SELECT id FROM users WHERE parent_id = ?))`,
+                        [trade.user_id, requesterId, requesterId]
+                    );
+                    isAuthorized = relRows.length > 0;
+                } else if (requesterRole === 'BROKER') {
+                    const [relRows] = await db.execute(
+                        `SELECT u.id FROM users u 
+                         LEFT JOIN client_settings cs ON u.id = cs.user_id 
+                         WHERE u.id = ? AND (u.parent_id = ? OR cs.broker_id = ?)`,
+                        [trade.user_id, requesterId, requesterId]
+                    );
+                    isAuthorized = relRows.length > 0;
+                }
+
+                if (!isAuthorized) {
+                    return res.status(403).json({ message: 'Not authorized to close this trade' });
+                }
+            }
         }
 
         // ─── VALIDATIONS (Min Time / Scalping SL) ─────────────────────────
@@ -2559,7 +2595,6 @@ const closeTrade = async (req, res) => {
             ? (currentPrice - trade.entry_price) * actualQuantity
             : (trade.entry_price - currentPrice) * actualQuantity;
 
-        const requesterRole = req.user?.role;
         const isClient = requesterRole === 'TRADER';
 
         if (!trade.is_pending && isClient && minTimeSeconds > 0 && !scalpingStopLossEnabled && secondsHeld < minTimeSeconds) {
