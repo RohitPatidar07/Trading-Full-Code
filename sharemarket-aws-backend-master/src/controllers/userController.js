@@ -744,9 +744,9 @@ const resetAccount = async (req, res) => {
     try {
         await connection.beginTransaction();
 
-        // 1. Get all OPEN trades to refund margin
+        // 1. Get all OPEN trades to refund margin (only executed trades, is_pending = 0)
         const [openTrades] = await connection.execute(
-            'SELECT SUM(margin_used) as totalMargin FROM trades WHERE user_id = ? AND status = "OPEN"',
+            'SELECT SUM(margin_used) as totalMargin FROM trades WHERE user_id = ? AND status = "OPEN" AND is_pending = 0',
             [userId]
         );
         const marginToRefund = parseFloat(openTrades[0]?.totalMargin || 0);

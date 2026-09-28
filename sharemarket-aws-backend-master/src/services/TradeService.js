@@ -150,6 +150,8 @@ class TradeService {
                     'UPDATE trades SET status = "CANCELLED", exit_price = entry_price, exit_time = NOW(), pnl = 0 WHERE id = ? AND status IN ("OPEN", "HOLD")',
                     [tradeId]
                 );
+<<<<<<< HEAD
+=======
                 if (cancelResult.affectedRows === 0) {
                     throw new Error('TRADE_ALREADY_CLOSED');
                 }
@@ -157,6 +159,7 @@ class TradeService {
                     'UPDATE users SET balance = balance + ? WHERE id = ?',
                     [marginToRelease, trade.user_id]
                 );
+>>>>>>> 5de99aea86be72cb3fecc8689653b5f7079498b7
                 await connection.commit();
 
                 // Fetch username for logging
