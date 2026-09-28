@@ -177,6 +177,11 @@ export const deleteFund = async (id) => {
     return response.data;
 };
 
+export const internalTransfer = async (data) => {
+    const response = await api.post('/portfolio/transfer', data);
+    return response.data;
+};
+
 // ─── MARGIN ──────────────────────────────────────────
 export const getNetHoldingMargin = async (clientId) => {
     const response = await api.get(`/portfolio/${clientId}/margin`);
