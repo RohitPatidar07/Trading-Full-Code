@@ -93,7 +93,7 @@ export function Login() {
                 </p>
 
                 <div style={styles.gotQuestionsRow}>
-                    Got any questions? <span style={styles.contactLink} onClick={() => navigate('/signup')}>Contact Us</span>
+                    Got any questions? <span style={styles.contactLink} onClick={() => navigate('/signup')}>Sign Up</span>
                 </div>
             </form>
         </div>
