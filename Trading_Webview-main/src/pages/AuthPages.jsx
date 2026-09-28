@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import * as api from '../services/api';
+import { BASE_URL } from '../constants/Config';
 import { useTrades } from '../context/TradeContext';
 import { Eye, EyeOff } from 'lucide-react';
 import iconImage from '../assets/icon.png';
@@ -120,7 +121,7 @@ export function SignUp() {
         setLoading(true);
         setError('');
         try {
-            await fetch(`${api.getHeaders ? 'https://trading-backend-production-8cee.up.railway.app/api' : ''}/auth/register`, {
+            await fetch(`${BASE_URL}/auth/register`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username, password, email, phone })

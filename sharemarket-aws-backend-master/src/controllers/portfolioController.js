@@ -171,7 +171,7 @@ const internalTransfer = async (req, res) => {
 
         await connection.commit();
 
-        // Optional cache invalidation
+        // Safe cache invalidation
         try {
             const { invalidateCache } = require('../utils/cacheManager');
             await invalidateCache(`users_${fromUserId}_all`);
