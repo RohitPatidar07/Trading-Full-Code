@@ -378,11 +378,10 @@ async function processTraderSettlement({ userId, username, weekStart, weekEnd, s
         }
 
         // 8. Update User's Balance atomically using delta adjustment to prevent overwriting concurrent deposits/trades
-        const netAdjustment = closingBalance - parseFloat(user.balance || 0);
-        if (netAdjustment !== 0) {
+        if (totalUnrealizedMtmPnl !== 0) {
             await connection.execute(
                 `UPDATE users SET balance = balance + ? WHERE id = ?`,
-                [netAdjustment, userId]
+                [totalUnrealizedMtmPnl, userId]
             );
         }
 
@@ -429,6 +428,13 @@ async function processTraderSettlement({ userId, username, weekStart, weekEnd, s
         );
 
         await connection.commit();
+
+        try {
+            const { invalidateCache } = require('../utils/cacheManager');
+            await invalidateCache(`users_${userId}_*`);
+            await invalidateCache(`m2m_${userId}_*`);
+            await invalidateCache(`funds_${userId}_*`);
+        } catch (_) {}
 
         console.log(`✅ [WeeklySettlement] Settle completed for ${username} (#${userId}): Open=₹${openingBalance.toFixed(2)}, P&L=₹${realizedPnl.toFixed(2)}, Brok=₹${brokerage.toFixed(2)}, Close=₹${closingBalance.toFixed(2)}, Held=${carriedForwardCount}, Settled=${settledTradesCount}`);
 

@@ -1,0 +1,25 @@
+[
+  {
+    "canonicalId": "MCX:FUT:SILVER:NO_EXP",
+    "source": "ZERODHA",
+    "exchange": "MCX",
+    "segment": "FUTURES",
+    "symbol": "SILVER",
+    "cleanSymbol": "SILVER",
+    "underlying": "SILVER",
+    "instrumentType": "FUT",
+    "expiry": null,
+    "strike": 0,
+    "optionType": null,
+    "lotSize": 5,
+    "tickSize": 0.05,
+    "sourceToken": null,
+    "rawPayload": {
+      "tradingsymbol": "SILVER",
+      "exchange": "MCX",
+      "segment": "MCX-FUT",
+      "lot_size": 5,
+      "instrument_type": "FUT"
+    }
+  }
+]

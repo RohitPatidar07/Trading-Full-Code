@@ -23,13 +23,12 @@ const createFund = async (req, res) => {
             return res.status(403).json({ message: 'You can only manage funds for your own clients' });
         }
 
-        const currentBalance = parseFloat(userRows[0].balance || 0);
-        const amountNum = parseFloat(amount);
         if (isNaN(amountNum) || !isFinite(amountNum) || amountNum <= 0) {
             await connection.rollback();
             return res.status(400).json({ message: 'Amount must be a positive number greater than 0' });
         }
-        
+
+        const currentBalance = parseFloat(userRows[0].balance || 0);
         if (type === 'WITHDRAW') {
             const [trades] = await connection.execute('SELECT * FROM trades WHERE user_id = ? AND status = "OPEN"', [userId]);
             const [settings] = await connection.execute('SELECT config_json FROM client_settings WHERE user_id = ?', [userId]);
@@ -49,6 +48,22 @@ const createFund = async (req, res) => {
                     }
                 });
             }
+
+            // Atomic deduction enforcing non-negative balance
+            const [deductResult] = await connection.execute(
+                'UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?',
+                [amountNum, userId, amountNum]
+            );
+            if (deductResult.affectedRows === 0) {
+                await connection.rollback();
+                return res.status(400).json({ message: 'Insufficient balance or concurrent transaction conflict' });
+            }
+        } else {
+            // Atomic credit
+            await connection.execute(
+                'UPDATE users SET balance = balance + ? WHERE id = ?',
+                [amountNum, userId]
+            );
         }
 
         // 2. Update User Balance atomically to prevent overwriting concurrent trade profits
@@ -270,8 +285,8 @@ const updateFund = async (req, res) => {
     try {
         await connection.beginTransaction();
 
-        // 1. Get existing entry
-        const [rows] = await connection.execute('SELECT * FROM ledger WHERE id = ?', [id]);
+        // 1. Get existing entry with lock
+        const [rows] = await connection.execute('SELECT * FROM ledger WHERE id = ? FOR UPDATE', [id]);
         if (rows.length === 0) {
             await connection.rollback();
             return res.status(404).json({ message: 'Fund entry not found' });
@@ -288,6 +303,20 @@ const updateFund = async (req, res) => {
         }
         const newType = mode === 'deposit' ? 'DEPOSIT' : 'WITHDRAW';
 
+        if (isNaN(newAmount) || newAmount <= 0) {
+            await connection.rollback();
+            return res.status(400).json({ message: 'Invalid fund amount' });
+        }
+
+        // Lock user row
+        const [userRowsForCheck] = await connection.execute('SELECT balance FROM users WHERE id = ? FOR UPDATE', [old.user_id]);
+        if (userRowsForCheck.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ message: 'User not found' });
+        }
+
+        const currentDBBalance = parseFloat(userRowsForCheck[0].balance || 0);
+
         // 2. Reverse old balance effect
         const oldReverse = old.type === 'DEPOSIT' ? -oldAmount : oldAmount;
 
@@ -298,8 +327,7 @@ const updateFund = async (req, res) => {
 
         // 3.5 Check if updated withdrawal violates margin rules
         if (newType === 'WITHDRAW') {
-            const [userRowsForCheck] = await connection.execute('SELECT balance FROM users WHERE id = ? FOR UPDATE', [old.user_id]);
-            const currentBalBeforeNewEffect = parseFloat(userRowsForCheck[0].balance || 0) + oldReverse;
+            const currentBalBeforeNewEffect = currentDBBalance + oldReverse;
             
             const [trades] = await connection.execute('SELECT * FROM trades WHERE user_id = ? AND status = "OPEN"', [old.user_id]);
             const [settings] = await connection.execute('SELECT config_json FROM client_settings WHERE user_id = ?', [old.user_id]);
@@ -317,17 +345,26 @@ const updateFund = async (req, res) => {
             }
         }
 
-        // 4. Update user balance
-        await connection.execute(
-            'UPDATE users SET balance = balance + ? WHERE id = ?',
-            [balanceChange, old.user_id]
-        );
+        // 4. Update user balance atomically
+        if (balanceChange < 0) {
+            const [updateRes] = await connection.execute(
+                'UPDATE users SET balance = balance + ? WHERE id = ? AND balance >= ?',
+                [balanceChange, old.user_id, Math.abs(balanceChange)]
+            );
+            if (updateRes.affectedRows === 0) {
+                await connection.rollback();
+                return res.status(400).json({ message: 'Insufficient balance to update fund entry' });
+            }
+        } else {
+            await connection.execute(
+                'UPDATE users SET balance = balance + ? WHERE id = ?',
+                [balanceChange, old.user_id]
+            );
+        }
 
-        // 5. Get new balance for ledger
-        const [userRows] = await connection.execute('SELECT balance FROM users WHERE id = ?', [old.user_id]);
-        const newBalance = parseFloat(userRows[0]?.balance || 0);
+        const newBalance = currentDBBalance + balanceChange;
 
-        // 6. Update ledger entry
+        // 5. Update ledger entry
         await connection.execute(
             'UPDATE ledger SET amount = ?, type = ?, remarks = ?, balance_after = ? WHERE id = ?',
             [newAmount, newType, notes || old.remarks, newBalance, id]
@@ -362,8 +399,8 @@ const deleteFund = async (req, res) => {
     try {
         await connection.beginTransaction();
 
-        // 1. Get the ledger entry
-        const [rows] = await connection.execute('SELECT * FROM ledger WHERE id = ?', [id]);
+        // 1. Get the ledger entry with lock
+        const [rows] = await connection.execute('SELECT * FROM ledger WHERE id = ? FOR UPDATE', [id]);
         if (rows.length === 0) {
             await connection.rollback();
             return res.status(404).json({ message: 'Fund entry not found' });
@@ -374,13 +411,30 @@ const deleteFund = async (req, res) => {
         await connection.execute('SELECT balance FROM users WHERE id = ? FOR UPDATE', [entry.user_id]);
         const amount = parseFloat(entry.amount);
 
+        // Lock user row
+        const [userRows] = await connection.execute('SELECT balance FROM users WHERE id = ? FOR UPDATE', [entry.user_id]);
+        if (userRows.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ message: 'User not found' });
+        }
+
         // 2. Reverse the balance change
-        // If it was DEPOSIT, subtract the amount. If WITHDRAW, add it back.
-        const reverseAmount = entry.type === 'DEPOSIT' ? -amount : amount;
-        await connection.execute(
-            'UPDATE users SET balance = balance + ? WHERE id = ?',
-            [reverseAmount, entry.user_id]
-        );
+        // If it was DEPOSIT, subtract amount with non-negative check. If WITHDRAW, add it back.
+        if (entry.type === 'DEPOSIT') {
+            const [deductRes] = await connection.execute(
+                'UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?',
+                [amount, entry.user_id, amount]
+            );
+            if (deductRes.affectedRows === 0) {
+                await connection.rollback();
+                return res.status(400).json({ message: 'Cannot delete deposit: user has insufficient balance' });
+            }
+        } else {
+            await connection.execute(
+                'UPDATE users SET balance = balance + ? WHERE id = ?',
+                [amount, entry.user_id]
+            );
+        }
 
         // 3. Delete the ledger entry
         await connection.execute('DELETE FROM ledger WHERE id = ?', [id]);

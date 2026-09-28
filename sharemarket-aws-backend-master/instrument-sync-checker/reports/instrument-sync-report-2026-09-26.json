@@ -1,0 +1,62 @@
+{
+  "runId": "SYNC_2026-09-26T07-49-32-581Z_d26fae",
+  "status": "MISMATCHES_FOUND",
+  "date": "2026-09-26",
+  "startTime": "2026-09-26T07:49:32.581Z",
+  "endTime": "2026-09-26T07:49:32.601Z",
+  "durationMs": 20,
+  "counts": {
+    "totalInternal": 1,
+    "totalZerodha": 1,
+    "totalAlti": 0,
+    "exactMatches": 1,
+    "normalizedMatches": 0,
+    "missingInZerodha": 0,
+    "missingInAlti": 0
+  },
+  "severityCounts": {
+    "critical": 1,
+    "high": 0,
+    "medium": 0,
+    "low": 0
+  },
+  "issues": [
+    {
+      "issueId": "LOT_SIZE_SILVER",
+      "type": "LOT_SIZE_MISMATCH",
+      "severity": "CRITICAL",
+      "symbol": "SILVER",
+      "canonicalId": "MCX:FUT:SILVER:NO_EXP",
+      "source": "ZERODHA",
+      "expectedInternal": 30,
+      "actualExternal": 5,
+      "description": "Internal lot size (30) does not match ZERODHA lot size (5).",
+      "potentialImpact": "Lot size discrepancy alters physical contract unit sizing and multiplied financial P&L.",
+      "recommendation": "Review scrip lot size configuration and sync with exchange master."
+    }
+  ],
+  "drift": {
+    "hasPreviousSnapshot": true,
+    "newContracts": [
+      {
+        "canonicalId": "MCX:FUT:SILVER:NO_EXP",
+        "symbol": "SILVER",
+        "source": "ZERODHA",
+        "lotSize": 5,
+        "expiry": null,
+        "type": "NEW_CONTRACT_DISCOVERED",
+        "severity": "INFO"
+      }
+    ],
+    "removedContracts": [
+      {
+        "canonicalId": "NSE:EQ:RELIANCE",
+        "symbol": "RELIANCE",
+        "source": "ZERODHA",
+        "type": "CONTRACT_EXPIRED_OR_DELISTED",
+        "severity": "LOW"
+      }
+    ],
+    "modifiedContracts": []
+  }
+}

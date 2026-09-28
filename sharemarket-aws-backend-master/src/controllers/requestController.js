@@ -115,7 +115,7 @@ const updateRequestStatus = async (req, res) => {
                     [reqAmt, request.user_id, reqAmt]
                 );
                 if (deductRes.affectedRows === 0) {
-                    throw new Error('Insufficient balance');
+                    throw new Error('Insufficient balance or concurrent transaction in progress');
                 }
             } else {
                 await connection.execute('UPDATE users SET balance = balance + ? WHERE id = ?', [reqAmt, request.user_id]);
@@ -164,9 +164,23 @@ const updateRequestStatus = async (req, res) => {
         await connection.execute('UPDATE payment_requests SET status = ?, admin_remarks = ?, admin_id = ? WHERE id = ?', [normalizedStatus, remark, req.user.id, id]);
 
         await connection.commit();
+<<<<<<< HEAD
         await logAction(req.user.id, `${normalizedStatus}_PAYMENT`, 'payment_requests', `${normalizedStatus} ${request.type} of ${request.amount} for user ID ${request.user_id}`);
         
         res.json({ message: `Request ${normalizedStatus.toLowerCase()}` });
+=======
+        await logAction(req.user.id, `${status}_PAYMENT`, 'payment_requests', `${status} ${request.type} of ${request.amount} for user ID ${request.user_id}`);
+
+        // Invalidate cache
+        try {
+            const { invalidateCache } = require('../utils/cacheManager');
+            await invalidateCache(`users_${request.user_id}_*`);
+            await invalidateCache(`funds_${request.user_id}_*`);
+            await invalidateCache(`m2m_${request.user_id}_*`);
+        } catch (_) {}
+
+        res.json({ message: `Request ${status.toLowerCase()}` });
+>>>>>>> 4eda370b498fa860cb5cf1961dafc745ff98b7e5
     } catch (err) {
         await connection.rollback();
         console.error(err);

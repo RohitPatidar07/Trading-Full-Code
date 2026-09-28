@@ -106,11 +106,11 @@ class TradeService {
             connection = await db.getConnection();
             await connection.beginTransaction();
 
-            // 1. Fetch trade and client settings with Tier 2 Pessimistic Row Lock (FOR UPDATE)
+            // 1. Fetch trade and client settings with Pessimistic Row Lock (FOR UPDATE)
             const [tradeRows] = await connection.execute(
                 `SELECT t.*, cs.config_json, cs.broker_id 
                  FROM trades t
-                 JOIN client_settings cs ON t.user_id = cs.user_id
+                 LEFT JOIN client_settings cs ON t.user_id = cs.user_id
                  WHERE t.id = ? FOR UPDATE`,
                 [tradeId]
             );
@@ -120,9 +120,10 @@ class TradeService {
             if (trade.status !== 'OPEN' && trade.status !== 'HOLD') throw new Error('Trade is already closed');
 
             // 🔒 Pessimistic Row Lock to prevent balance race conditions during trade closure
-            await connection.execute('SELECT id, balance FROM users WHERE id = ? FOR UPDATE', [trade.user_id]);
+            const [userRows] = await connection.execute('SELECT id, balance FROM users WHERE id = ? FOR UPDATE', [trade.user_id]);
+            if (userRows.length === 0) throw new Error('User not found');
 
-            const clientConfig = JSON.parse(trade.config_json || '{}');
+            const clientConfig = trade.config_json ? JSON.parse(trade.config_json) : {};
             const marginToRelease = parseFloat(trade.margin_used || 0);
 
             // Determine requester role early for pricing authority and audit

@@ -36,8 +36,12 @@ const initializeCache = async () => {
 
         redisClient = redis.createClient(clientOptions);
 
+        let loggedError = false;
         redisClient.on('error', (err) => {
-            console.warn('[Cache] ⚠️ Redis error:', err.message);
+            if (!loggedError) {
+                console.warn('[Cache] ℹ️ Redis not running locally, continuing with direct DB mode.');
+                loggedError = true;
+            }
             isRedisConnected = false;
         });
 
@@ -49,7 +53,6 @@ const initializeCache = async () => {
         await redisClient.connect();
         isRedisConnected = true;
     } catch (err) {
-        console.warn('[Cache] Redis not available, caching disabled:', err.message);
         isRedisConnected = false;
     }
 };

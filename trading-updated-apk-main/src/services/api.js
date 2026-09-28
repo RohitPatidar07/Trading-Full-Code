@@ -657,3 +657,18 @@ export const submitContactInquiry = async ({ name, phone, message }) => {
     return { success: true };
 };
 
+export const logout = async () => {
+    try {
+        if (userSession.token) {
+            await fetch(`${BASE_URL}/auth/logout`, {
+                method: 'POST',
+                headers: await getHeaders(),
+            });
+        }
+    } catch (e) {
+        console.warn('Backend logout call failed:', e.message);
+    } finally {
+        clearSession(true);
+    }
+};
+
