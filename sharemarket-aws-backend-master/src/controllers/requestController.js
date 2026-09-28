@@ -74,22 +74,15 @@ const updateRequestStatus = async (req, res) => {
         if (requests.length === 0) throw new Error('Request not found or already processed');
         const request = requests[0];
 
-<<<<<<< HEAD
-        if (normalizedStatus === 'APPROVED') {
-            // 2. Get User Details
-            const [userRows] = await connection.execute('SELECT balance FROM users WHERE id = ? FOR UPDATE', [request.user_id]);
-            if (userRows.length === 0) throw new Error('User not found');
-            const user = userRows[0];
-            const balanceBefore = parseFloat(user.balance || 0);
-=======
-        if (status === 'APPROVED') {
+        const finalStatus = normalizedStatus || status;
+        if (finalStatus === 'APPROVED') {
             // 2. Get User Details with row lock to prevent race condition
             const [userRows] = await connection.execute('SELECT balance FROM users WHERE id = ? FOR UPDATE', [request.user_id]);
             if (!userRows.length) throw new Error('User not found');
             const user = userRows[0];
-            const currentBal = parseFloat(user.balance || 0);
+            const balanceBefore = parseFloat(user.balance || 0);
+            const currentBal = balanceBefore;
             const reqAmt = parseFloat(request.amount);
->>>>>>> f567a0d87c77b0e9f9bd8d20c5e5793c24d93b6c
 
             if (request.type === 'WITHDRAW') {
                 // Fetch Open Trades and Config
@@ -98,15 +91,9 @@ const updateRequestStatus = async (req, res) => {
                 const clientConfig = settings.length > 0 ? JSON.parse(settings[0].config_json || '{}') : {};
 
                 const blockedMargin = MarginUtils.calculateTotalRequiredHoldingMargin(trades, clientConfig);
-<<<<<<< HEAD
                 const withdrawable = balanceBefore - blockedMargin;
 
-                if (parseFloat(request.amount) > withdrawable) {
-=======
-                const withdrawable = currentBal - blockedMargin;
-
                 if (reqAmt > withdrawable) {
->>>>>>> f567a0d87c77b0e9f9bd8d20c5e5793c24d93b6c
                     throw new Error(`Insufficient Withdrawable Balance. Required Holding Margin: ₹${blockedMargin.toFixed(2)}, Available to Withdraw: ₹${withdrawable.toFixed(2)}`);
                 }
 
@@ -123,30 +110,21 @@ const updateRequestStatus = async (req, res) => {
 
             // 3. Get accurate New Balance inside locked transaction for Ledger
             const [updatedUserRows] = await connection.execute('SELECT balance FROM users WHERE id = ?', [request.user_id]);
-<<<<<<< HEAD
-            const newBalance = parseFloat(updatedUserRows[0].balance || 0);
-=======
             const newBalance = parseFloat(updatedUserRows[0]?.balance || 0);
->>>>>>> f567a0d87c77b0e9f9bd8d20c5e5793c24d93b6c
 
             // 4. Record in Ledger with full double-entry consistency
             await connection.execute(
-<<<<<<< HEAD
                 `INSERT INTO ledger (user_id, amount, type, balance_before, balance_after, reference_id, reference_type, remarks, created_at)
                  VALUES (?, ?, ?, ?, ?, ?, 'PAYMENT_REQUEST', ?, NOW())`,
                 [
                     request.user_id,
-                    request.amount,
+                    reqAmt,
                     request.type,
                     balanceBefore,
                     newBalance,
                     String(request.id),
                     remark || `Payment Request Approved: ${request.type} #${request.id}`
                 ]
-=======
-                'INSERT INTO ledger (user_id, amount, type, balance_after, remarks) VALUES (?, ?, ?, ?, ?)',
-                [request.user_id, reqAmt, request.type, newBalance, remark || `Request Approved: ${request.type}`]
->>>>>>> f567a0d87c77b0e9f9bd8d20c5e5793c24d93b6c
             );
 
             // Invalidate user balance caches
@@ -164,12 +142,7 @@ const updateRequestStatus = async (req, res) => {
         await connection.execute('UPDATE payment_requests SET status = ?, admin_remarks = ?, admin_id = ? WHERE id = ?', [normalizedStatus, remark, req.user.id, id]);
 
         await connection.commit();
-<<<<<<< HEAD
-        await logAction(req.user.id, `${normalizedStatus}_PAYMENT`, 'payment_requests', `${normalizedStatus} ${request.type} of ${request.amount} for user ID ${request.user_id}`);
-        
-        res.json({ message: `Request ${normalizedStatus.toLowerCase()}` });
-=======
-        await logAction(req.user.id, `${status}_PAYMENT`, 'payment_requests', `${status} ${request.type} of ${request.amount} for user ID ${request.user_id}`);
+        await logAction(req.user.id, `${finalStatus}_PAYMENT`, 'payment_requests', `${finalStatus} ${request.type} of ${request.amount} for user ID ${request.user_id}`);
 
         // Invalidate cache
         try {
@@ -179,8 +152,7 @@ const updateRequestStatus = async (req, res) => {
             await invalidateCache(`m2m_${request.user_id}_*`);
         } catch (_) {}
 
-        res.json({ message: `Request ${status.toLowerCase()}` });
->>>>>>> 4eda370b498fa860cb5cf1961dafc745ff98b7e5
+        res.json({ message: `Request ${finalStatus.toLowerCase()}` });
     } catch (err) {
         await connection.rollback();
         console.error(err);
