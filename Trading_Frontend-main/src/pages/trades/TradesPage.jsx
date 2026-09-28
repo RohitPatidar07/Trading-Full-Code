@@ -2,9 +2,11 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Download, SquarePen, Trash2, X, Eye, ChevronLeft, ChevronRight } from 'lucide-react';
 import { getTrades, deleteTrade } from '../../services/api';
+import OrderTraceModal from '../../components/modals/OrderTraceModal';
 import { useAuth } from '../../context/AuthContext';
 import { useMarketData } from '../../context/MarketDataContext';
 import { displaySymbol } from '../../utils/marketUtils';
+import { generateCSVAsync } from '../../utils/sheetWorkerClient';
 
 const PAGE_SIZE = 20;
 
@@ -17,6 +19,7 @@ const TradesPage = ({ onCreateClick, onNavigate }) => {
     const [deleteModal, setDeleteModal] = useState({ show: false, trade: null });
     const [deleting, setDeleting] = useState(false);
     const [currentPage, setCurrentPage] = useState(1);
+    const [traceTradeId, setTraceTradeId] = useState(null);
     const { watchlistRows, cryptoData, forexData, commodityData } = useMarketData();
 
     const [filters, setFilters] = useState({
@@ -101,23 +104,35 @@ const TradesPage = ({ onCreateClick, onNavigate }) => {
         setSelectedTrades(e.target.checked ? pagedTrades.map(t => t.id) : []);
     };
 
-    const handleExport = () => {
+    const handleExport = async () => {
         if (filteredTrades.length === 0) return alert('No trades to export');
         const headers = ['ID', 'Scrip', 'Type', 'Username', 'Buy Rate', 'Sell Rate', 'Lots', 'Status', 'Entry Time'];
-        const csvContent = [
-            headers.join(','),
-            ...filteredTrades.map(t => [
-                t.id, t.symbol, t.type, t.username,
-                t.type === 'BUY' ? t.entry_price : (t.exit_price || ''),
-                t.type === 'SELL' ? t.entry_price : (t.exit_price || ''),
-                t.qty, t.status, t.entry_time
-            ].join(','))
-        ].join('\n');
-        const blob = new Blob([csvContent], { type: 'text/csv' });
-        const link = document.createElement('a');
-        link.href = URL.createObjectURL(blob);
-        link.download = 'trades_export.csv';
-        link.click();
+        const dataRows = filteredTrades.map(t => [
+            t.id, t.symbol, t.type, t.username,
+            t.type === 'BUY' ? t.entry_price : (t.exit_price || ''),
+            t.type === 'SELL' ? t.entry_price : (t.exit_price || ''),
+            t.qty, t.status, t.entry_time
+        ]);
+
+        try {
+            const csvContent = await generateCSVAsync(headers, dataRows);
+            const blob = new Blob([csvContent], { type: 'text/csv' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'trades_export.csv';
+            link.click();
+        } catch (err) {
+            console.error('Export worker error, using direct fallback:', err);
+            const fallbackCsv = [
+                headers.join(','),
+                ...dataRows.map(row => row.map(cell => `"${String(cell ?? '').replace(/"/g, '""')}"`).join(','))
+            ].join('\n');
+            const blob = new Blob([fallbackCsv], { type: 'text/csv' });
+            const link = document.createElement('a');
+            link.href = URL.createObjectURL(blob);
+            link.download = 'trades_export.csv';
+            link.click();
+        }
     };
 
     const fmtTime = (t) => {
@@ -262,6 +277,7 @@ const TradesPage = ({ onCreateClick, onNavigate }) => {
                                 <th className="px-4 py-3.5 font-semibold" style={{ border: '1px solid rgba(255,255,255,0.06)' }}>Actions</th>
                                 <th className="px-4 py-3.5 font-semibold" style={{ border: '1px solid rgba(255,255,255,0.06)' }}>ID ↕</th>
                                 <th className="px-4 py-3.5 font-semibold" style={{ border: '1px solid rgba(255,255,255,0.06)' }}>Status</th>
+                                <th className="px-4 py-3.5 font-semibold text-center" style={{ border: '1px solid rgba(255,255,255,0.06)' }}>Trace</th>
                                 <th className="px-4 py-3.5 font-semibold" style={{ border: '1px solid rgba(255,255,255,0.06)' }}>Scrip</th>
                                 <th className="px-4 py-3.5 font-semibold" style={{ border: '1px solid rgba(255,255,255,0.06)' }}>Segment</th>
                                 <th className="px-4 py-3.5 font-semibold" style={{ border: '1px solid rgba(255,255,255,0.06)' }}>User ID</th>
@@ -274,7 +290,7 @@ const TradesPage = ({ onCreateClick, onNavigate }) => {
                         </thead>
                         <tbody className="text-[13px] text-slate-300">
                             {loading ? (
-                                <tr><td colSpan="12" className="px-6 py-12 text-center text-slate-500 italic" style={{ border: '1px solid rgba(255,255,255,0.06)' }}>Loading trades...</td></tr>
+                                <tr><td colSpan="13" className="px-6 py-12 text-center text-slate-500 italic" style={{ border: '1px solid rgba(255,255,255,0.06)' }}>Loading trades...</td></tr>
                             ) : pagedTrades.length > 0 ? pagedTrades.map((t) => {
                                 const isOpen = t.status === 'OPEN' && !t.is_pending;
                                 const isClosed = t.status === 'CLOSED';
@@ -317,6 +333,16 @@ const TradesPage = ({ onCreateClick, onNavigate }) => {
                                             <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${getStatusStyle(t)}`}>
                                                 {getStatusLabel(t)}
                                             </span>
+                                        </td>
+                                        <td className="px-3 py-3 text-center whitespace-nowrap" style={cellStyle}>
+                                            <button
+                                                type="button"
+                                                onClick={() => setTraceTradeId(t.id)}
+                                                className="px-2.5 py-1 rounded text-[11px] font-bold bg-blue-500/10 text-blue-400 border border-blue-500/25 hover:bg-blue-500/20 transition-all cursor-pointer inline-flex items-center gap-1 shadow-sm active:scale-95"
+                                                title={`Trace Order Pipeline for Trade #${t.id}`}
+                                            >
+                                                <span>🔍</span> Trace
+                                            </button>
                                         </td>
                                         <td className="px-4 py-3 font-bold text-white" style={cellStyle}>{getSymbolDisplay(t)}</td>
                                         <td className="px-4 py-3 text-slate-400" style={cellStyle}>{t.market_type || '-'}</td>
@@ -428,6 +454,13 @@ const TradesPage = ({ onCreateClick, onNavigate }) => {
                     </div>
                 </div>
             )}
+
+            {/* Order Flow Trace Modal */}
+            <OrderTraceModal
+                isOpen={!!traceTradeId}
+                tradeId={traceTradeId}
+                onClose={() => setTraceTradeId(null)}
+            />
         </div>
     );
 };

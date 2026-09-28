@@ -354,14 +354,38 @@ const updateTransactionPassword = async (req, res) => {
 };
 
 const changePassword = async (req, res) => {
-    const { newPassword } = req.body;
+    const { currentPassword, newPassword } = req.body;
+    if (!newPassword || newPassword.trim().length < 8) {
+        return res.status(400).json({ message: 'New password must be at least 8 characters' });
+    }
+
     try {
+        const [rows] = await db.execute('SELECT password FROM users WHERE id = ?', [req.user.id]);
+        if (rows.length === 0) return res.status(404).json({ message: 'User not found' });
+
+        if (currentPassword) {
+            const isMatch = await bcrypt.compare(currentPassword, rows[0].password);
+            if (!isMatch) {
+                return res.status(400).json({ message: 'Current password is incorrect' });
+            }
+        }
+
         const hashedPassword = await bcrypt.hash(newPassword, 10);
         await db.execute('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, req.user.id]);
         res.json({ message: 'Password updated successfully' });
     } catch (err) {
-        console.error(err);
+        console.error('Change password error:', err);
         res.status(500).send('Server Error');
+    }
+};
+
+const logout = async (req, res) => {
+    try {
+        await db.execute('UPDATE users SET session_token = NULL WHERE id = ?', [req.user.id]);
+        res.json({ message: 'Logged out successfully' });
+    } catch (err) {
+        console.error('Logout error:', err);
+        res.status(500).json({ message: 'Server error during logout' });
     }
 };
 
@@ -422,4 +446,4 @@ const getMe = async (req, res) => {
   }
 };
 
-module.exports = { login, createUser, updateTransactionPassword, changePassword, verifyTransactionPassword, getMe };
+module.exports = { login, logout, createUser, updateTransactionPassword, changePassword, verifyTransactionPassword, getMe };

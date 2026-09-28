@@ -67,6 +67,11 @@ class AllTickService {
             'NGAS':   ['NGAS',    'NGASM'],
             'COPPER': ['COPPER',  'COPPERM']
         };
+
+        // Live Health & Diagnostic Tracking
+        this.lastLatencyMs = 0;
+        this.lastPollSuccessTime = null;
+        this.lastError = null;
     }
 
     // Load symbols from database (dynamic, not hardcoded)
@@ -568,6 +573,7 @@ class AllTickService {
             data: { symbol_list: allSymbols.map(sym => ({ code: sym })) }
         });
 
+        const startTime = Date.now();
         try {
             const response = await axios.get(HTTP_DEPTH_URL, {
                 params: { token: this.token, query },
@@ -582,6 +588,10 @@ class AllTickService {
                 }
                 return;
             }
+
+            this.lastLatencyMs = Date.now() - startTime;
+            this.lastPollSuccessTime = new Date().toISOString();
+            this.lastError = null;
 
             const tickList = respData.data?.tick_list;
             if (!Array.isArray(tickList)) return;
@@ -641,6 +651,93 @@ class AllTickService {
             }
         }
     }
+
+    /**
+     * Get real-time health and diagnostic metrics
+     */
+    getHealth() {
+        const cachedKeys = Object.keys(this.cache);
+        const usdinr = this.cache['USDINR'] || this.cache['FOREX:USDINR'];
+        const btc = this.cache['BTCUSDT'] || this.cache['CRYPTO:BTC/USD'];
+        const eth = this.cache['ETHUSDT'] || this.cache['CRYPTO:ETH/USD'];
+        const gold = this.cache['GOLD'] || this.cache['FOREX:XAU/USD'];
+
+        return {
+            service: 'AllTick Integration Service',
+            status: this.isRunning ? (this.isWsConnected ? 'connected' : 'polling_active') : 'idle',
+            mode: this.isWsConnected ? 'WEBSOCKET' : 'HTTP_DEPTH_POLL',
+            isRunning: this.isRunning,
+            isWsConnected: this.isWsConnected,
+            wsDisabled: this.wsDisabled,
+            pollingActive: !!this.pollingInterval,
+            reconnectAttempts: this.reconnectAttempts,
+            latencyMs: this.lastLatencyMs || 0,
+            symbolsCount: {
+                crypto: this.cryptoSymbols.length,
+                forex: this.forexSymbols.length,
+                commodity: this.commoditySymbols.length,
+                total: this.cryptoSymbols.length + this.forexSymbols.length + this.commoditySymbols.length
+            },
+            cachedTicksCount: cachedKeys.length,
+            benchmarks: {
+                USDINR: usdinr ? (usdinr.ltp || usdinr.bid) : null,
+                BTCUSDT: btc ? (btc.ltp || btc.bid) : null,
+                ETHUSDT: eth ? (eth.ltp || eth.bid) : null,
+                GOLD: gold ? (gold.ltp || gold.bid) : null
+            },
+            lastUpdated: this.lastPollSuccessTime,
+            lastError: this.lastError
+        };
+    }
+
+    /**
+     * Measure active round-trip ping to AllTick depth API
+     */
+    async ping() {
+        const startTime = Date.now();
+        const testCode = 'USDINR';
+        const query = JSON.stringify({
+            trace: 'ping-' + Date.now(),
+            data: { symbol_list: [{ code: testCode }] }
+        });
+
+        try {
+            const response = await axios.get(HTTP_DEPTH_URL, {
+                params: { token: this.token, query },
+                timeout: 5000
+            });
+            const latency = Date.now() - startTime;
+            this.lastLatencyMs = latency;
+            this.lastPollSuccessTime = new Date().toISOString();
+
+            return {
+                success: response.data?.ret === 200,
+                latencyMs: latency,
+                code: response.data?.ret,
+                msg: response.data?.msg || 'OK'
+            };
+        } catch (err) {
+            this.lastError = err.message;
+            return {
+                success: false,
+                latencyMs: Date.now() - startTime,
+                error: err.message
+            };
+        }
+    }
+
+    /**
+     * Restart/reconnect the AllTick integration service
+     */
+    async restart() {
+        console.log('[ALLTICKS] Manual service restart triggered.');
+        this.stop();
+        this.wsDisabled = false;
+        this.reconnectAttempts = 0;
+        await this.start();
+        return this.getHealth();
+    }
 }
 
 module.exports = new AllTickService();
+

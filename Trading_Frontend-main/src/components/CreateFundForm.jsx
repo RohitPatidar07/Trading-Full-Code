@@ -90,6 +90,23 @@ const CreateFundForm = ({ onSave, onBack, mode = 'deposit', initialUser }) => {
     try {
       await api.verifyTransactionPassword(formData.transactionPassword);
 
+      if (formData.transactionType === 'transfer') {
+        if (!formData.toUserId) {
+          setFormError('Please select a recipient user for transfer');
+          setSubmitting(false);
+          return;
+        }
+        const transferRes = await api.internalTransfer({
+          toUserId: formData.toUserId,
+          amount: formData.amount,
+          notes: formData.notes
+        });
+        setFormError('');
+        showToast(transferRes.message || 'Transfer completed successfully!', 'success');
+        setTimeout(() => onSave?.(formData), 300);
+        return;
+      }
+
       if (isEdit) {
         await api.updateFund(effectiveUser._fundId, {
           amount: formData.amount,
@@ -177,12 +194,30 @@ const CreateFundForm = ({ onSave, onBack, mode = 'deposit', initialUser }) => {
                   >
                     <option value="deposit" className="font-bold">DEPOSIT (AD)</option>
                     <option value="withdraw" className="font-bold">WITHDRAW (WD)</option>
+                    <option value="transfer" className="font-bold">INTERNAL TRANSFER (TR)</option>
                   </select>
                   <div className="absolute right-3 top-[34px] pointer-events-none text-black">
                      <ChevronDown className="w-4 h-4" />
                   </div>
                 </div>
               </div>
+
+              {/* Recipient User (Only for Internal Transfer) */}
+              {formData.transactionType === 'transfer' && (
+                <div>
+                  <label className="block text-[#bcc0cf] text-[15px] font-normal mb-3">
+                    Transfer To (Recipient User) *
+                  </label>
+                  <SearchableSelect
+                    options={users.filter(u => String(u.id) !== String(formData.userId))}
+                    value={formData.toUserId}
+                    onChange={(val) => setFormData({ ...formData, toUserId: val })}
+                    placeholder="Select Recipient User"
+                    labelField="username"
+                    valueField="id"
+                  />
+                </div>
+              )}
 
               {/* Notes */}
               <div className="md:col-span-1">

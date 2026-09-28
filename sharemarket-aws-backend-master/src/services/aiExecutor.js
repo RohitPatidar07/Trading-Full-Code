@@ -111,18 +111,20 @@ const executeAddFund = async (query, parsed, reqUser) => {
     try {
         await connection.beginTransaction();
 
-        // Verify user exists
-        const [rows] = await connection.execute('SELECT id, balance, full_name FROM users WHERE id = ?', [userId]);
+        // Verify user exists and lock row
+        const [rows] = await connection.execute('SELECT id, balance, full_name FROM users WHERE id = ? FOR UPDATE', [userId]);
         if (!rows.length) {
             await connection.rollback();
             return buildResponse('error', `User ${userId} not found`, null, { module: 'funds' });
         }
 
         const currentBalance = parseFloat(rows[0].balance || 0);
-        const newBalance = currentBalance + amount;
 
-        // Update balance
+        // Update balance atomically
         await connection.execute('UPDATE users SET balance = balance + ? WHERE id = ?', [amount, userId]);
+
+        const [freshUserRows] = await connection.execute('SELECT balance FROM users WHERE id = ?', [userId]);
+        const newBalance = parseFloat(freshUserRows[0]?.balance || 0);
 
         // Insert ledger entry
         await connection.execute(
@@ -187,9 +189,19 @@ const executeWithdraw = async (query, parsed, reqUser) => {
             return buildResponse('error', `Insufficient Withdrawable Balance. Required Holding Margin: ₹${blockedMargin.toFixed(2)}, Available to Withdraw: ₹${withdrawable.toFixed(2)}`, null, { module: 'funds' });
         }
 
-        const newBalance = currentBalance - amount;
+        const [deductRes] = await connection.execute(
+            'UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?',
+            [amount, userId, amount]
+        );
+        if (deductRes.affectedRows === 0) {
+            await connection.rollback();
+            return buildResponse('error', 'Insufficient balance', null, { module: 'funds' });
+        }
 
-        await connection.execute('UPDATE users SET balance = balance - ? WHERE id = ?', [amount, userId]);
+        const [freshUserRows] = await connection.execute('SELECT balance FROM users WHERE id = ?', [userId]);
+        const newBalance = parseFloat(freshUserRows[0]?.balance || 0);
+
+
         await connection.execute(
             'INSERT INTO ledger (user_id, amount, type, balance_after, remarks) VALUES (?, ?, ?, ?, ?)',
             [userId, amount, 'WITHDRAW', newBalance, `AI Command: Fund withdrawn by ${reqUser?.full_name || 'system'}`]
@@ -231,32 +243,46 @@ const executeTransfer = async (query, parsed, reqUser) => {
     try {
         await connection.beginTransaction();
 
-        // Lock both rows
-        const [fromRows] = await connection.execute('SELECT id, balance, full_name FROM users WHERE id = ? FOR UPDATE', [fromUserId]);
+        // Lock both rows in deterministic order to prevent deadlock
+        const firstId = Math.min(Number(fromUserId), Number(toUserId));
+        const secondId = Math.max(Number(fromUserId), Number(toUserId));
+        await connection.execute('SELECT id, balance FROM users WHERE id IN (?, ?) FOR UPDATE', [firstId, secondId]);
+
+        const [fromRows] = await connection.execute('SELECT id, balance, full_name FROM users WHERE id = ?', [fromUserId]);
         if (!fromRows.length) {
             await connection.rollback();
             return buildResponse('error', `Source user ${fromUserId} not found`, null, { module: 'funds' });
         }
 
-        const [toRows] = await connection.execute('SELECT id, balance, full_name FROM users WHERE id = ? FOR UPDATE', [toUserId]);
+        const [toRows] = await connection.execute('SELECT id, balance, full_name FROM users WHERE id = ?', [toUserId]);
         if (!toRows.length) {
             await connection.rollback();
             return buildResponse('error', `Destination user ${toUserId} not found`, null, { module: 'funds' });
         }
 
         const fromBal = parseFloat(fromRows[0].balance || 0);
-        const toBal = parseFloat(toRows[0].balance || 0);
 
         if (fromBal < amount) {
             await connection.rollback();
             return buildResponse('error', `Insufficient balance. ${fromRows[0].full_name || 'User ' + fromUserId} has ₹${fromBal}`, null, { module: 'funds' });
         }
 
-        const newFromBal = fromBal - amount;
-        const newToBal = toBal + amount;
 
-        await connection.execute('UPDATE users SET balance = balance - ? WHERE id = ?', [amount, fromUserId]);
+        const [deductRes] = await connection.execute(
+            'UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?',
+            [amount, fromUserId, amount]
+        );
+        if (deductRes.affectedRows === 0) {
+            await connection.rollback();
+            return buildResponse('error', 'Insufficient balance or concurrent transaction conflict', null, { module: 'funds' });
+        }
         await connection.execute('UPDATE users SET balance = balance + ? WHERE id = ?', [amount, toUserId]);
+
+        const [freshFromRows] = await connection.execute('SELECT balance FROM users WHERE id = ?', [fromUserId]);
+        const newFromBal = parseFloat(freshFromRows[0]?.balance || 0);
+
+        const [freshToRows] = await connection.execute('SELECT balance FROM users WHERE id = ?', [toUserId]);
+        const newToBal = parseFloat(freshToRows[0]?.balance || 0);
 
         await connection.execute(
             'INSERT INTO ledger (user_id, amount, type, balance_after, remarks) VALUES (?, ?, ?, ?, ?)',

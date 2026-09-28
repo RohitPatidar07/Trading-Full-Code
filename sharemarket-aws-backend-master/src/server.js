@@ -137,6 +137,12 @@ app.use('/api/scrip-ticks', scripTickRoutes);
 const marketDataRoutes = require('./routes/marketDataRoutes');
 app.use('/api/market-data', marketDataRoutes);
 
+const traceRoutes = require('./routes/traceRoutes');
+app.use('/api/trace', traceRoutes);
+
+const alltickRoutes = require('./routes/alltickRoutes');
+app.use('/api/alltick', alltickRoutes);
+
 // ── Root-level voice AI routes (no /api prefix, no auth required for direct access)
 app.post('/ai-parse', aiParse);
 app.post('/execute-command', executeVoiceCommand);

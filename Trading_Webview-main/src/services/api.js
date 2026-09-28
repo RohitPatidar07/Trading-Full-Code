@@ -29,6 +29,7 @@ export const setSession = (token, user) => {
 };
 
 export const getSessionUser = () => userSession.user;
+export const getToken = () => userSession.token;
 
 export const refreshUserSession = (user) => {
     userSession.user = { ...userSession.user, ...user };
@@ -123,6 +124,21 @@ export const getMe = async () => {
     const data = await handleResponse(res);
     refreshUserSession(data);
     return data;
+};
+
+export const logout = async () => {
+    try {
+        if (userSession.token) {
+            await fetchWithTimeout(`${BASE_URL}/auth/logout`, {
+                method: 'POST',
+                headers: await getHeaders(),
+            });
+        }
+    } catch (e) {
+        console.warn('Backend logout failed:', e.message);
+    } finally {
+        clearSession();
+    }
 };
 
 export const getTrades = async (status) => {
@@ -566,7 +582,6 @@ export const getScrips = async () => {
     return handleResponse(res);
 };
 
-export const logout = clearSession;
 export const aiAskTutor = aiTutor;
 
 export { getHeaders };
