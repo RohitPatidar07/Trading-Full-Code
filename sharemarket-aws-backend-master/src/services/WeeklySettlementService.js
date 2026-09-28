@@ -232,7 +232,7 @@ async function processTraderSettlement({ userId, username, weekStart, weekEnd, s
 
             let weeklyMtmPnl = 0;
             const commodityLotService = require('./CommodityLotService');
-            const { getMcxBaseScrip, MCX_LOT_SIZES } = require('../utils/symbolHelper');
+            const { getMcxBaseScrip, MCX_LOT_SIZES, getLotSize } = require('../utils/symbolHelper');
             const isCommodity = commodityLotService.isCommodityScrip(trade.symbol, trade.market_type);
 
             if (isCommodity) {
@@ -240,11 +240,10 @@ async function processTraderSettlement({ userId, username, weekStart, weekEnd, s
                 weeklyMtmPnl = calc.pnlInr;
                 console.log(`  📦 [Trade #${trade.id}] COMMODITY ${trade.symbol} | type=${trade.type} qty=${trade.qty} | baseline=${baselinePrice}(${baselineSource}) settlementPrice=${settlementPrice}(${priceSource}) | lotSize=${calc.lotSize} pnlUsd=${calc.pnlUsd.toFixed(4)} usdInr=${calc.usdInr} => MTM_INR=₹${weeklyMtmPnl.toFixed(2)}`);
             } else {
-                // ✅ For MCX: use same MCX_LOT_SIZES as TradeService (not lot_size_at_entry)
                 const { calculateEquityPnL, calculateMcxPnL } = require('../utils/equityPnL');
                 if (marketType === 'MCX') {
                     const base = getMcxBaseScrip(trade.symbol);
-                    lotSize = (base && MCX_LOT_SIZES[base]) ? MCX_LOT_SIZES[base] : parseFloat(trade.lot_size_at_entry || trade.lot_size || 1);
+                    lotSize = (base && MCX_LOT_SIZES[base]) ? MCX_LOT_SIZES[base] : (parseFloat(trade.lot_size_at_entry || trade.lot_size) || getLotSize(trade.symbol, 'MCX'));
                     weeklyMtmPnl = calculateMcxPnL({
                         type: trade.type,
                         entryPrice: baselinePrice,
@@ -253,7 +252,9 @@ async function processTraderSettlement({ userId, username, weekStart, weekEnd, s
                         lotSize: lotSize
                     });
                 } else {
-                    lotSize = parseFloat(trade.lot_size_at_entry || trade.lot_size || 1);
+                    lotSize = (parseFloat(trade.lot_size_at_entry || trade.lot_size) > 1)
+                        ? parseFloat(trade.lot_size_at_entry || trade.lot_size)
+                        : getLotSize(trade.symbol, marketType);
                     weeklyMtmPnl = calculateEquityPnL({
                         type: trade.type,
                         entryPrice: baselinePrice,

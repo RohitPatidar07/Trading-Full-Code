@@ -178,38 +178,18 @@ const getClientLiveM2M = async (req, res) => {
             lotMap[r.symbol.toUpperCase()] = parseFloat(r.lot_size || 1);
         });
 
-        const { MCX_LOT_SIZES, getMcxBaseScrip } = require('../utils/symbolHelper');
+        const { MCX_LOT_SIZES, getMcxBaseScrip, getLotSize } = require('../utils/symbolHelper');
 
         const getMultiplier = (symbol, marketType, userConfig = null) => {
             const sym = symbol.toUpperCase();
             const mType = (marketType || 'MCX').toUpperCase();
 
-            // 1. NSE/Equity/Options/NFO generally use point-to-point (multiplier 1)
-            const isMcxSymbol = mType === 'MCX' || sym.startsWith('MCX:') ||
-                ['GOLD', 'SILVER', 'CRUDEOIL', 'NATURALGAS', 'COPPER', 'ZINC', 'NICKEL', 'LEAD', 'ALUMINIUM'].some(k => sym.includes(k));
-            if (!isMcxSymbol && (mType === 'EQUITY' || mType === 'NSE' || mType === 'NFO' || mType === 'OPTIONS')) {
+            // Pure Cash Equity uses point-to-point (multiplier 1)
+            if (mType === 'EQUITY' || (mType === 'NSE' && !sym.endsWith('FUT') && !sym.endsWith('CE') && !sym.endsWith('PE'))) {
                 return 1;
             }
 
-            // 2. Try Hardcoded MCX_LOT_SIZES (Point Values)
-            // CRITICAL SYNC: The mobile app uses hardcoded multipliers for P/L.
-            // We follow the same logic here to ensure cross-platform consistency.
-            const base = getMcxBaseScrip(symbol);
-            if (base && MCX_LOT_SIZES[base]) return MCX_LOT_SIZES[base];
-
-            // Try trimmed symbol (e.g. SILVER26MAYFUT -> SILVER)
-            const symTrimmed = symbol.split(':').pop().toUpperCase().replace(/\d+.*/, '');
-            if (MCX_LOT_SIZES[symTrimmed]) return MCX_LOT_SIZES[symTrimmed];
-
-            // NOTE: mcxLotMargins[scrip].LOT is the per-user position LIMIT (max lots allowed),
-            // NOT the exchange lot size. It must never be used as a P&L/turnover multiplier.
-            // Skipping that fallback intentionally.
-
-            // 4. Try Scrip Data Table (Fallback)
-            const cleanSym = symbol.includes(':') ? symbol.split(':')[1] : symbol;
-            if (lotMap[cleanSym.toUpperCase()] && lotMap[cleanSym.toUpperCase()] > 0) return lotMap[cleanSym.toUpperCase()];
-
-            return 1; // Default fallback
+            return getLotSize(symbol, mType);
         };
 
         // 3. Map for MarketDataService prefixes
@@ -539,13 +519,17 @@ const getClientLiveM2M = async (req, res) => {
                         unrealizedPnl = calc.pnlInr;
                     } else {
                         const { calculateEquityPnL, calculateMcxPnL } = require('../utils/equityPnL');
+                        const resolvedLot = (parseFloat(trade.lot_size_at_entry) > 0)
+                            ? parseFloat(trade.lot_size_at_entry)
+                            : lotSize;
                         if (mType === 'MCX') {
                             unrealizedPnl = calculateMcxPnL({
                                 type: trade.type,
                                 entryPrice: baselinePrice,
                                 exitPrice: exitPrice,
                                 qty: qty,
-                                lotSize: lotSize
+                                qtyInput: trade.qty_input,
+                                lotSize: resolvedLot
                             });
                         } else {
                             unrealizedPnl = calculateEquityPnL({
@@ -553,7 +537,9 @@ const getClientLiveM2M = async (req, res) => {
                                 entryPrice: baselinePrice,
                                 exitPrice: exitPrice,
                                 qty: qty,
-                                lotSize: lotSize,
+                                qtyInput: trade.qty_input,
+                                actualQty: trade.actual_qty,
+                                lotSize: resolvedLot,
                                 tradeMode: trade.trade_mode,
                                 equityUnitsMode: trade.equity_units_mode
                             });
@@ -1020,14 +1006,17 @@ module.exports = {
                         pnl = calc.pnlInr;
                     } else {
                         const { calculateEquityPnL, calculateMcxPnL } = require('../utils/equityPnL');
+                        const { getLotSize } = require('../utils/symbolHelper');
                         const mktType = (trade.market_type || '').toUpperCase();
+                        const resolvedLot = parseFloat(trade.lot_size_at_entry || trade.lot_size) || getLotSize(trade.symbol, mktType);
                         if (mktType === 'MCX') {
                             pnl = calculateMcxPnL({
                                 type: trade.type,
                                 entryPrice: baselinePrice,
                                 exitPrice: currentPrice,
                                 qty: trade.qty,
-                                lotSize: trade.lot_size || 1
+                                qtyInput: trade.qty_input,
+                                lotSize: resolvedLot
                             });
                         } else {
                             pnl = calculateEquityPnL({
@@ -1035,7 +1024,9 @@ module.exports = {
                                 entryPrice: baselinePrice,
                                 exitPrice: currentPrice,
                                 qty: trade.qty,
-                                lotSize: trade.lot_size || 1,
+                                qtyInput: trade.qty_input,
+                                actualQty: trade.actual_qty,
+                                lotSize: resolvedLot,
                                 tradeMode: trade.trade_mode,
                                 equityUnitsMode: trade.equity_units_mode
                             });

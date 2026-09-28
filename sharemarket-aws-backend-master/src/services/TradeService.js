@@ -3,7 +3,7 @@ const mockEngine = require('../utils/mockEngine');
 const { logAction } = require('../controllers/systemController');
 const { invalidateCache } = require('../utils/cacheManager');
 const kiteService = require('../utils/kiteService');
-const { getLotSize, getMcxBaseScrip } = require('../utils/symbolHelper');
+const { getLotSize, getUniversalLotSize, getMcxBaseScrip } = require('../utils/symbolHelper');
 const { buildTradeLog } = require('../utils/logFormatter');
 
 // ═══════════════════════════════════════════════════════════════════
@@ -175,70 +175,16 @@ class TradeService {
             }
 
             // ══════════════════════════════════════════════════════════════════
-            // LOT SIZE CALCULATION (Sync with dashboardController.js)
+            // LOT SIZE CALCULATION (Unified Single Source of Truth)
             // ══════════════════════════════════════════════════════════════════
-            if (mType === 'MCX') {
-                const { getMcxBaseScrip, MCX_LOT_SIZES } = require('../utils/symbolHelper');
-                const base = getMcxBaseScrip(trade.symbol);
-                const symTrimmed = (trade.symbol || '').toUpperCase().replace(/\d+.*/, '');
-
-                // 1. Try Hardcoded MCX_LOT_SIZES first (Primary source)
-                if (base && MCX_LOT_SIZES[base]) {
-                    lotSize = MCX_LOT_SIZES[base];
-                } else if (MCX_LOT_SIZES[symTrimmed]) {
-                    lotSize = MCX_LOT_SIZES[symTrimmed];
-                }
-
-                console.log(`[TradeService] Final MCX Lot Size: ${trade.symbol} → ${lotSize}`);
+            if (trade.lot_size_at_entry && parseFloat(trade.lot_size_at_entry) > 0) {
+                lotSize = parseFloat(trade.lot_size_at_entry);
+            } else if (trade.lot_size && parseFloat(trade.lot_size) > 0) {
+                lotSize = parseFloat(trade.lot_size);
+            } else {
+                lotSize = await getUniversalLotSize(trade.symbol, mType, connection);
             }
-            else if (mType === 'EQUITY' || mType === 'NSE' || mType === 'NFO' || mType === 'OPTIONS') {
-                lotSize = 1;
-                if (trade.lot_size_at_entry && parseFloat(trade.lot_size_at_entry) > 0) {
-                    lotSize = parseFloat(trade.lot_size_at_entry);
-                } else if (trade.lot_size && parseFloat(trade.lot_size) > 0) {
-                    lotSize = parseFloat(trade.lot_size);
-                } else if (mType !== 'EQUITY') {
-                    try {
-                        const cleanSym = trade.symbol.includes(':') ? trade.symbol.split(':')[1] : trade.symbol;
-                        const [scripRows] = await connection.execute('SELECT lot_size FROM scrip_data WHERE symbol = ? OR symbol = ?', [trade.symbol, cleanSym]);
-                        if (scripRows.length > 0 && parseFloat(scripRows[0].lot_size) > 0) {
-                            lotSize = parseFloat(scripRows[0].lot_size);
-                        } else {
-                            if (cleanSym.includes('BANKNIFTY')) lotSize = 15;
-                            else if (cleanSym.includes('NIFTY')) lotSize = 25;
-                            else if (cleanSym.includes('FINNIFTY')) lotSize = 25;
-                            else if (cleanSym.includes('MIDCPNIFTY')) lotSize = 50;
-                            else if (cleanSym.includes('SENSEX')) lotSize = 10;
-                            else if (cleanSym.includes('BANKEX')) lotSize = 15;
-                        }
-                    } catch (e) { console.warn(`[TradeService] Error fetching ${mType} lot size:`, e.message); }
-                }
-            }
-            else {
-                // Check CommodityLotService first for COMMODITY, COMEX, FOREX, CRYPTO lot sizes
-                const commodityLotService = require('./CommodityLotService');
-                const info = commodityLotService.getLotInfo(trade.symbol);
-                if (info && info.lot_size > 0) {
-                    lotSize = info.lot_size;
-                    console.log(`[TradeService] ${mType} Lot Size (from CommodityLotService): ${trade.symbol} → ${lotSize}`);
-                } else {
-                    try {
-                        const cleanSym = trade.symbol.includes(':') ? trade.symbol.split(':')[1] : trade.symbol;
-                        const [scripRows] = await connection.execute(
-                            'SELECT lot_size FROM scrip_data WHERE symbol = ? OR symbol = ?',
-                            [trade.symbol, cleanSym]
-                        );
-                        if (scripRows.length > 0 && parseFloat(scripRows[0].lot_size) > 0) {
-                            lotSize = parseFloat(scripRows[0].lot_size);
-                            console.log(`[TradeService] ${mType} Lot Size (from scrip_data): ${trade.symbol} → ${lotSize}`);
-                        } else {
-                            lotSize = 1;
-                        }
-                    } catch (e) {
-                        lotSize = 1;
-                    }
-                }
-            }
+            console.log(`[TradeService] Resolved Lot Size for ${trade.symbol} (${mType}): ${lotSize}`);
 
             let finalExitPrice = exitPrice;
             const isIndianSegment = ['MCX', 'NSE', 'NFO', 'EQUITY', 'OPTIONS'].includes(mType);
@@ -593,55 +539,13 @@ class TradeService {
         }
         const clientConfig = JSON.parse(trade.config_json || '{}');
 
-        // Lot size calculation
-        if (mType === 'MCX') {
-            const { getMcxBaseScrip, MCX_LOT_SIZES } = require('../utils/symbolHelper');
-            const base = getMcxBaseScrip(trade.symbol);
-            const symTrimmed = (trade.symbol || '').toUpperCase().replace(/\d+.*/, '');
-
-            if (base && MCX_LOT_SIZES[base]) {
-                lotSize = MCX_LOT_SIZES[base];
-            } else if (MCX_LOT_SIZES[symTrimmed]) {
-                lotSize = MCX_LOT_SIZES[symTrimmed];
-            }
-        }
-        else if (mType === 'EQUITY' || mType === 'NSE' || mType === 'NFO' || mType === 'OPTIONS') {
-            lotSize = 1;
-            if (trade.lot_size_at_entry && parseFloat(trade.lot_size_at_entry) > 0) {
-                lotSize = parseFloat(trade.lot_size_at_entry);
-            } else if (trade.lot_size && parseFloat(trade.lot_size) > 0) {
-                lotSize = parseFloat(trade.lot_size);
-            } else if (mType !== 'EQUITY') {
-                try {
-                    const cleanSym = trade.symbol.includes(':') ? trade.symbol.split(':')[1] : trade.symbol;
-                    const [scripRows] = await connection.execute('SELECT lot_size FROM scrip_data WHERE symbol = ? OR symbol = ?', [trade.symbol, cleanSym]);
-                    if (scripRows.length > 0 && parseFloat(scripRows[0].lot_size) > 0) {
-                        lotSize = parseFloat(scripRows[0].lot_size);
-                    } else {
-                        if (cleanSym.includes('BANKNIFTY')) lotSize = 15;
-                        else if (cleanSym.includes('NIFTY')) lotSize = 25;
-                        else if (cleanSym.includes('FINNIFTY')) lotSize = 25;
-                        else if (cleanSym.includes('MIDCPNIFTY')) lotSize = 50;
-                        else if (cleanSym.includes('SENSEX')) lotSize = 10;
-                        else if (cleanSym.includes('BANKEX')) lotSize = 15;
-                    }
-                } catch (e) { console.warn(`[TradeService] Error fetching ${mType} lot size:`, e.message); }
-            }
-        }
-        else {
-            try {
-                const [scripRows] = await connection.execute(
-                    'SELECT lot_size FROM scrip_data WHERE symbol = ?',
-                    [trade.symbol]
-                );
-                if (scripRows.length > 0 && parseFloat(scripRows[0].lot_size) > 0) {
-                    lotSize = parseFloat(scripRows[0].lot_size);
-                } else {
-                    lotSize = 1;
-                }
-            } catch (e) {
-                lotSize = 1;
-            }
+        // Unified Lot size calculation
+        if (trade.lot_size_at_entry && parseFloat(trade.lot_size_at_entry) > 0) {
+            lotSize = parseFloat(trade.lot_size_at_entry);
+        } else if (trade.lot_size && parseFloat(trade.lot_size) > 0) {
+            lotSize = parseFloat(trade.lot_size);
+        } else {
+            lotSize = await getUniversalLotSize(trade.symbol, mType, connection);
         }
 
         let brokerage = 0;

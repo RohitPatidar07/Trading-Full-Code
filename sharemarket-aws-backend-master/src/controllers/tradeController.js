@@ -453,8 +453,7 @@ const placeOrder = async (req, res) => {
         const isNSEEq = marketType === 'EQUITY' || (marketType === 'NSE' && instType === 'EQ');
         const isNSEDer = (marketType === 'NSE' || marketType === 'NIFTY' || marketType === 'OPTIONS' || marketType === 'NFO') &&
             ['FUT', 'CE', 'PE', 'OPT'].includes(instType);
-
-        const { MCX_LOT_SIZES, getMcxBaseScrip } = require('../utils/symbolHelper');
+        const { MCX_LOT_SIZES, getMcxBaseScrip, getLotSize } = require('../utils/symbolHelper');
         const CommodityLotService = require('../services/CommodityLotService');
 
         let authoritativeLotSize = null;
@@ -464,14 +463,20 @@ const placeOrder = async (req, res) => {
             const baseSym = getMcxBaseScrip(symbol) || symbol.toUpperCase();
             if (MCX_LOT_SIZES[baseSym] && MCX_LOT_SIZES[baseSym] > 0) {
                 authoritativeLotSize = MCX_LOT_SIZES[baseSym];
+            } else {
+                authoritativeLotSize = getLotSize(symbol, marketType);
             }
         } else if (['COMMODITY', 'COMEX', 'FOREX', 'CRYPTO'].includes(marketType)) {
             const commInfo = CommodityLotService.getLotInfo(symbol);
             if (commInfo && commInfo.lot_size > 0) {
                 authoritativeLotSize = commInfo.lot_size;
+            } else {
+                authoritativeLotSize = getLotSize(symbol, marketType);
             }
         } else if (isNSEEq) {
             authoritativeLotSize = 1;
+        } else {
+            authoritativeLotSize = getLotSize(symbol, marketType);
         }
 
         // Fail-Closed Guard: Abort if lot size cannot be authoritatively resolved
@@ -1387,13 +1392,15 @@ const placeOrder = async (req, res) => {
         // EQUITY UNITS/LOTS MODE - Calculate actual_qty based on authoritative DB configuration
         // ═════════════════════════════════════════════════════════════
         const qtyInput = qtyNum;
-        const lotSizeAtEntry = authoritativeLotSize;
+        // Enforce Server-Side Master Lot Size (Do not trust arbitrary client-sent lot size)
+        // getLotSize already imported at top
+        let lotSizeAtEntry = authoritativeLotSize || ((dbScrip && parseFloat(dbScrip.lot_size) > 0) ? parseFloat(dbScrip.lot_size) : getLotSize(symbol, marketType));
         const isNseEquity = marketType === 'EQUITY' || (marketType === 'NSE' && (req.body.instrument_type || '') === 'EQ');
         const isNseDerivative = (marketType === 'NSE' || marketType === 'NIFTY' || marketType === 'OPTIONS' || marketType === 'NFO') &&
             ['FUT', 'CE', 'PE', 'OPT'].includes(req.body.instrument_type || '');
         const isMcx = marketType === 'MCX';
 
-        const equityUnitsMode = (isNseEquity && req.body.equity_units_mode !== undefined && req.body.equity_units_mode !== null)
+        const equityUnitsMode = (req.body.equity_units_mode !== undefined && req.body.equity_units_mode !== null)
             ? parseInt(req.body.equity_units_mode, 10)
             : 0;
         const instrumentType = req.body.instrument_type || '';
@@ -1834,7 +1841,7 @@ const getActivePositions = async (req, res) => {
         rows.forEach(pos => {
             const info = commodityLotService.getLotInfo(pos.symbol);
             if (info) {
-                pos.lot_size = info.lot_size;
+                pos.lot_size = parseFloat(pos.lot_size) > 0 ? parseFloat(pos.lot_size) : info.lot_size;
                 pos.usdinr_value = info.usdinr_value;
                 pos.is_commodity = info.category === 'COMMODITY' || info.category === 'FOREX' || info.category === 'CRYPTO' || info.category === 'COMEX';
                 if (pos.is_commodity) {
@@ -1849,22 +1856,8 @@ const getActivePositions = async (req, res) => {
                     } catch (e) { }
                 }
             } else {
-                // For MCX derivatives & options
-                const cleanSym = pos.symbol.split(':').pop().toUpperCase();
-                const mType = (pos.market_type || 'MCX').toUpperCase();
-                const isMcxSymbol = mType === 'MCX' || pos.symbol.toUpperCase().startsWith('MCX:') ||
-                    ['GOLD', 'SILVER', 'CRUDEOIL', 'NATURALGAS', 'COPPER', 'ZINC', 'NICKEL', 'LEAD', 'ALUMINIUM'].some(k => cleanSym.includes(k));
-
-                if (isMcxSymbol) {
-                    const base = getMcxBaseScrip(pos.symbol);
-                    if (base && MCX_LOT_SIZES[base]) {
-                        pos.lot_size = MCX_LOT_SIZES[base];
-                    } else {
-                        const symTrimmed = cleanSym.replace(/\d+.*/, '');
-                        if (MCX_LOT_SIZES[symTrimmed]) {
-                            pos.lot_size = MCX_LOT_SIZES[symTrimmed];
-                        }
-                    }
+                if (!pos.lot_size || parseFloat(pos.lot_size) <= 1) {
+                    pos.lot_size = getLotSize(pos.symbol, pos.market_type);
                 }
             }
         });
@@ -2665,7 +2658,7 @@ const deleteTrade = async (req, res) => {
             }
         } catch (e) { console.warn('Error fetching admin details for delete log:', e.message); }
 
-        const lotSz = getLotSize(trade.symbol, trade.market_type);
+        const lotSz = parseFloat(trade.lot_size_at_entry) > 0 ? parseFloat(trade.lot_size_at_entry) : getLotSize(trade.symbol, trade.market_type);
         const lots = trade.qty / lotSz;
 
         const deleteLog = buildTradeLog('ORDER_DELETED', {
@@ -2816,7 +2809,7 @@ const updateTrade = async (req, res) => {
             }
         } catch (e) { console.warn('Error fetching admin details for update log:', e.message); }
 
-        const lotSz = getLotSize(trade.symbol, trade.market_type);
+        const lotSz = parseFloat(trade.lot_size_at_entry) > 0 ? parseFloat(trade.lot_size_at_entry) : getLotSize(trade.symbol, trade.market_type);
         const lots = (qty ? parseInt(qty) : trade.qty) / lotSz;
 
         const updateLog = buildTradeLog('ORDER_UPDATED', {
@@ -2947,7 +2940,7 @@ const restoreTrade = async (req, res) => {
             }
         } catch (e) { console.warn('Error fetching admin details for restore log:', e.message); }
 
-        const lotSz = getLotSize(trade.symbol, trade.market_type);
+        const lotSz = parseFloat(trade.lot_size_at_entry) > 0 ? parseFloat(trade.lot_size_at_entry) : getLotSize(trade.symbol, trade.market_type);
         const lots = trade.qty / lotSz;
 
         const restoreLog = buildTradeLog('ORDER_RESTORED', {
