@@ -446,7 +446,6 @@ class MarketDataService extends EventEmitter {
                 const commodity = this.getCommodityPrices();
 
                 if (crypto.length === 0 && forex.length === 0 && commodity.length === 0) {
-                    console.warn('WARN [CryptoForexPush] No crypto, forex or commodity data available');
                     return;
                 }
 

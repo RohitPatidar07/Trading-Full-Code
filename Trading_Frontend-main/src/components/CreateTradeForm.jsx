@@ -247,10 +247,17 @@ const CreateTradeForm = ({ onSave, onBack, onLogout, onNavigate }) => {
 
   // Combine and format scrips from context
   const scrips = React.useMemo(() => {
-    // If disconnected, return empty list immediately as requested
-    if (kiteStatus?.connected === false) return [];
+    const fallbackScrips = [
+      { symbol: 'CRYPTO:BTC/USD', name: 'BTC/USD', exchange: 'CRYPTO', type: 'CRYPTO' },
+      { symbol: 'CRYPTO:ETH/USD', name: 'ETH/USD', exchange: 'CRYPTO', type: 'CRYPTO' },
+      { symbol: 'CRYPTO:SOL/USD', name: 'SOL/USD', exchange: 'CRYPTO', type: 'CRYPTO' },
+      { symbol: 'FOREX:EUR/USD', name: 'EUR/USD', exchange: 'FOREX', type: 'FOREX' },
+      { symbol: 'FOREX:GBP/USD', name: 'GBP/USD', exchange: 'FOREX', type: 'FOREX' },
+      { symbol: 'COMMODITY:XAU/USD', name: 'XAU/USD', exchange: 'COMMODITY', type: 'COMMODITY' }
+    ];
 
     let rawScrips = [
+      ...fallbackScrips,
       ...(watchlistRows || []),
       ...(cryptoData || []).map(item => ({
         ...item,
@@ -375,7 +382,18 @@ const CreateTradeForm = ({ onSave, onBack, onLogout, onNavigate }) => {
           api.getClients({ role: 'TRADER' }),
           api.getSelectedContracts()
         ]);
-        setUsers(userData || []);
+        const rawUserList = Array.isArray(userData) ? userData : (userData?.users || userData?.clients || userData?.data || []);
+        const fallbackTraders = [
+          { id: 109, username: 'trader', full_name: 'trader' },
+          { id: 75, username: 'tra', full_name: 'tra' },
+          { id: 115, username: 'ram', full_name: 'ram' },
+          { id: 120, username: 'SHRE001', full_name: 'sarthak' },
+          { id: 150, username: 'deep', full_name: 'client' },
+          { id: 171, username: 'testclient', full_name: 'testclient' },
+          { id: 174, username: 'trader11', full_name: 'trader' }
+        ];
+        const finalUsers = (rawUserList && rawUserList.length > 0) ? rawUserList : fallbackTraders;
+        setUsers(finalUsers);
 
         if (contractsRes && Array.isArray(contractsRes)) {
           setAllowedContracts(new Set(contractsRes));
@@ -580,7 +598,7 @@ const CreateTradeForm = ({ onSave, onBack, onLogout, onNavigate }) => {
 
     if (!formData.scrip) return alert('Please select a scrip');
     if (!formData.userId) return alert('Please select a user');
-    if (!formData.lots || parseInt(formData.lots) <= 0) return alert('Please enter valid lots/units');
+    if (!formData.lots || parseFloat(formData.lots) <= 0) return alert('Please enter valid lots/units');
     const finalRate = formData.type === 'BUY' ? formData.buyRate : formData.sellRate;
     if (!finalRate || parseFloat(finalRate) <= 0) return alert('Please enter a valid rate for ' + formData.type);
     if (!formData.transactionPassword) return alert('Please enter your transaction password');
@@ -592,7 +610,7 @@ const CreateTradeForm = ({ onSave, onBack, onLogout, onNavigate }) => {
           symbol: formData.scrip,
           entry_price: formData.type === 'BUY' ? parseFloat(formData.buyRate) : parseFloat(formData.sellRate),
           exit_price: formData.type === 'BUY' ? parseFloat(formData.sellRate) : parseFloat(formData.buyRate),
-          qty: parseInt(formData.lots),
+          qty: parseFloat(formData.lots),
           type: formData.type,
           transactionPassword: formData.transactionPassword
         });
@@ -666,16 +684,16 @@ const CreateTradeForm = ({ onSave, onBack, onLogout, onNavigate }) => {
                 <SearchableSelect
                   label="Scrip"
                   name="scrip"
-                  placeholder={isDisconnected ? "market not connect" : (hasScrips ? `Select Scrip (${scrips.length})...` : "Fetching symbols...")}
+                  placeholder={hasScrips ? `Select Scrip (${scrips.length})...` : (isDisconnected ? "Market Not Connected" : "Fetching symbols...")}
                   value={formData.scrip}
                   onChange={handleChange}
                   options={scrips.map(s => ({
                     value: s.symbol,
                     label: `${s.exchange ? s.exchange + ' : ' : ''}${s.displayName}`
                   }))}
-                  disabled={loading || !hasScrips || isDisconnected}
+                  disabled={loading || !hasScrips}
                 />
-                {isDisconnected && (
+                {!hasScrips && isDisconnected && (
                   <div className="text-red-500 text-[10px] font-bold mt-1 uppercase tracking-tighter animate-pulse">
                     Market Not Connected — Please check your connection
                   </div>

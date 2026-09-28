@@ -443,10 +443,9 @@ const placeOrder = async (req, res) => {
             marketType = dbScrip.market_type;
         }
 
-        // ─── PARSE QUANTITY AND PRICE EARLY (needed for validations) ──────────────
-        const qtyNum = Number(qty);
-        if (!Number.isInteger(qtyNum) || qtyNum <= 0) {
-            return res.status(400).json({ success: false, message: 'Quantity must be a positive integer' });
+        const qtyNum = parseFloat(qty);
+        if (isNaN(qtyNum) || qtyNum <= 0) {
+            return res.status(400).json({ success: false, message: 'Quantity must be a positive number' });
         }
 
         const instType = req.body.instrument_type || '';
