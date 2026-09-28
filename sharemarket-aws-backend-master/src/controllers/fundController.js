@@ -87,7 +87,7 @@ const createFund = async (req, res) => {
         const [updatedUserRows] = await connection.execute('SELECT balance FROM users WHERE id = ?', [userId]);
         const newBalance = parseFloat(updatedUserRows[0]?.balance || 0);
 
-        // 4. Record in Ledger with double-entry consistency
+        // 4. Record in Ledger
         await connection.execute(
             `INSERT INTO ledger (user_id, amount, type, balance_before, balance_after, reference_type, remarks, created_at)
              VALUES (?, ?, ?, ?, ?, 'DIRECT_ADMIN', ?, NOW())`,

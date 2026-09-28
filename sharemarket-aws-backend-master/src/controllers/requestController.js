@@ -74,14 +74,12 @@ const updateRequestStatus = async (req, res) => {
         if (requests.length === 0) throw new Error('Request not found or already processed');
         const request = requests[0];
 
-        const finalStatus = normalizedStatus || status;
-        if (finalStatus === 'APPROVED') {
+        if (normalizedStatus === 'APPROVED') {
             // 2. Get User Details with row lock to prevent race condition
             const [userRows] = await connection.execute('SELECT balance FROM users WHERE id = ? FOR UPDATE', [request.user_id]);
             if (!userRows.length) throw new Error('User not found');
             const user = userRows[0];
             const balanceBefore = parseFloat(user.balance || 0);
-            const currentBal = balanceBefore;
             const reqAmt = parseFloat(request.amount);
 
             if (request.type === 'WITHDRAW') {
@@ -142,7 +140,7 @@ const updateRequestStatus = async (req, res) => {
         await connection.execute('UPDATE payment_requests SET status = ?, admin_remarks = ?, admin_id = ? WHERE id = ?', [normalizedStatus, remark, req.user.id, id]);
 
         await connection.commit();
-        await logAction(req.user.id, `${finalStatus}_PAYMENT`, 'payment_requests', `${finalStatus} ${request.type} of ${request.amount} for user ID ${request.user_id}`);
+        await logAction(req.user.id, `${normalizedStatus}_PAYMENT`, 'payment_requests', `${normalizedStatus} ${request.type} of ${request.amount} for user ID ${request.user_id}`);
 
         // Invalidate cache
         try {
@@ -152,7 +150,7 @@ const updateRequestStatus = async (req, res) => {
             await invalidateCache(`m2m_${request.user_id}_*`);
         } catch (_) {}
 
-        res.json({ message: `Request ${finalStatus.toLowerCase()}` });
+        res.json({ message: `Request ${normalizedStatus.toLowerCase()}` });
     } catch (err) {
         await connection.rollback();
         console.error(err);

@@ -153,10 +153,6 @@ class TradeService {
                 if (cancelResult.affectedRows === 0) {
                     throw new Error('TRADE_ALREADY_CLOSED');
                 }
-                await connection.execute(
-                    'UPDATE users SET balance = balance + ? WHERE id = ?',
-                    [marginToRelease, trade.user_id]
-                );
                 await connection.commit();
 
                 // Fetch username for logging

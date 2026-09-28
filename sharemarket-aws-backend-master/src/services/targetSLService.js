@@ -43,12 +43,13 @@ const monitorTargetSL = async () => {
                     }
                 }
 
-                // STRICT PRICE GUARD: If live price is not available or valid, SKIP evaluation to avoid false executions.
-                let currentPrice = (livePrice !== null && !isNaN(livePrice) && parseFloat(livePrice) > 0) ? parseFloat(livePrice) : null;
-                if (currentPrice === null) {
+                // STRICT PRICE GUARD:
+                // If live price is not available, SKIP evaluation. NEVER fallback to entry_price!
+                if (!livePrice || livePrice <= 0) {
                     continue;
                 }
 
+                const currentPrice = livePrice;
                 const targetPrice = trade.target_price !== null ? parseFloat(trade.target_price) : null;
                 const stopLossPrice = trade.stop_loss !== null ? parseFloat(trade.stop_loss) : null;
 

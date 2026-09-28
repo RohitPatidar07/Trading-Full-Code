@@ -799,7 +799,7 @@ const recalculateBrokerage = async (req, res) => {
         );
         const config = settingsRows.length > 0 ? JSON.parse(settingsRows[0].config_json || '{}') : {};
 
-        // Get all closed trades including brokerage, market_type & lot_size_at_entry
+        // Get all closed trades including current brokerage, lot_size_at_entry & market_type
         const [trades] = await connection.execute(
             'SELECT id, symbol, qty, entry_price, exit_price, type, brokerage, market_type, lot_size_at_entry FROM trades WHERE user_id = ? AND status = "CLOSED"',
             [userId]
