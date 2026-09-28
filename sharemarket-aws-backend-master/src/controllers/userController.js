@@ -792,7 +792,7 @@ const recalculateBrokerage = async (req, res) => {
 
         // Get all closed trades
         const [trades] = await db.execute(
-            'SELECT id, symbol, qty, entry_price, exit_price, type FROM trades WHERE user_id = ? AND status = "CLOSED"',
+            'SELECT id, symbol, qty, entry_price, exit_price, type, market_type FROM trades WHERE user_id = ? AND status = "CLOSED"',
             [userId]
         );
 
