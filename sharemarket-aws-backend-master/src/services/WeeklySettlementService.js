@@ -365,11 +365,14 @@ async function processTraderSettlement({ userId, username, weekStart, weekEnd, s
             }
         }
 
-        // 8. Update User's Balance and create Ledger Transaction Audit Trail for MTM PnL
-        await connection.execute(
-            `UPDATE users SET balance = ? WHERE id = ?`,
-            [closingBalance, userId]
-        );
+        // 8. Update User's Balance atomically using delta adjustment to prevent overwriting concurrent deposits/trades
+        const netAdjustment = closingBalance - parseFloat(user.balance || 0);
+        if (netAdjustment !== 0) {
+            await connection.execute(
+                `UPDATE users SET balance = balance + ? WHERE id = ?`,
+                [netAdjustment, userId]
+            );
+        }
 
         const remarksText = `Weekly Settlement ${weekStart} to ${weekEnd} | MTM PnL: ₹${totalUnrealizedMtmPnl.toFixed(2)}`;
 

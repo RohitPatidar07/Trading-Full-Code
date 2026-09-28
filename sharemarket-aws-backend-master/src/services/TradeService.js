@@ -108,6 +108,9 @@ class TradeService {
             const trade = tradeRows[0];
             if (trade.status !== 'OPEN' && trade.status !== 'HOLD') throw new Error('Trade is already closed');
 
+            // 🔒 Pessimistic Row Lock to prevent balance race conditions during trade closure
+            await connection.execute('SELECT id, balance FROM users WHERE id = ? FOR UPDATE', [trade.user_id]);
+
             const clientConfig = JSON.parse(trade.config_json || '{}');
             const marginToRelease = parseFloat(trade.margin_used || 0);
 
@@ -655,6 +658,9 @@ class TradeService {
      */
     async executeNetting(userId, symbol, marketType, incomingTrade, connection) {
         console.log(`[executeNetting] Starting netting for user ${userId}, symbol ${symbol}, type ${incomingTrade.type}, qty ${incomingTrade.qty}`);
+
+        // 🔒 Row Lock to serialize netting calculations for user balance
+        await connection.execute('SELECT id, balance FROM users WHERE id = ? FOR UPDATE', [userId]);
 
         const { isSameInstrument } = require('../utils/symbolHelper');
         const oppositeType = incomingTrade.type === 'BUY' ? 'SELL' : 'BUY';

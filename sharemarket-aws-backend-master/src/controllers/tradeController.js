@@ -1503,6 +1503,30 @@ const placeOrder = async (req, res) => {
         try {
             await connection.beginTransaction();
 
+            // 🔒 Pessimistic Row Lock & Live Margin Validation inside transaction to prevent double-order race condition
+            const [lockedUserRows] = await connection.execute(
+                'SELECT balance FROM users WHERE id = ? FOR UPDATE',
+                [targetUserId]
+            );
+            const liveBalance = lockedUserRows.length > 0 ? parseFloat(lockedUserRows[0].balance || 0) : parseFloat(targetUser.balance || 0);
+
+            const [liveOpenTrades] = await connection.execute(
+                'SELECT margin_used FROM trades WHERE user_id = ? AND status = "OPEN" AND is_pending = 0',
+                [targetUserId]
+            );
+            const liveUsedMargin = liveOpenTrades.reduce((sum, t) => sum + parseFloat(t.margin_used || 0), 0);
+            const liveAvailableMargin = liveBalance - liveUsedMargin;
+
+            if (liveAvailableMargin < newMarginRequired) {
+                await connection.rollback();
+                return res.status(400).json({
+                    message: `Insufficient margin. Required: ₹${newMarginRequired.toFixed(2)}, Available: ₹${liveAvailableMargin.toFixed(2)}`,
+                    required: newMarginRequired.toFixed(2),
+                    available: liveAvailableMargin.toFixed(2),
+                    shortfall: (newMarginRequired - liveAvailableMargin).toFixed(2)
+                });
+            }
+
             if (is_pending) {
                 const [result] = await connection.execute(
                     `INSERT INTO trades

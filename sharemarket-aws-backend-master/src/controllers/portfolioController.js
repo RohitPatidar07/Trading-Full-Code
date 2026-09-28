@@ -23,25 +23,50 @@ const getLedger = async (req, res) => {
 const internalTransfer = async (req, res) => {
     const { toUserId, amount, notes } = req.body;
     const fromUserId = req.user.id;
+    const transferAmount = parseFloat(amount);
+    if (isNaN(transferAmount) || transferAmount <= 0) {
+        return res.status(400).json({ message: 'Transfer amount must be greater than 0' });
+    }
+
     const connection = await db.getConnection();
 
     try {
         await connection.beginTransaction();
 
+        // Lock both user rows in ascending ID order to prevent deadlock & race conditions
+        const firstId = Math.min(Number(fromUserId), Number(toUserId));
+        const secondId = Math.max(Number(fromUserId), Number(toUserId));
+        await connection.execute(
+            'SELECT id, balance FROM users WHERE id IN (?, ?) FOR UPDATE',
+            [firstId, secondId]
+        );
+
         // Check balance of sender if not SUPERADMIN
         if (req.user.role !== 'SUPERADMIN') {
             const [sender] = await connection.execute('SELECT balance FROM users WHERE id = ?', [fromUserId]);
-            if (sender[0].balance < amount) throw new Error('Insufficient balance');
+            if (!sender.length || parseFloat(sender[0].balance || 0) < transferAmount) {
+                throw new Error('Insufficient balance');
+            }
+
+            // Atomic balance deduction with safety condition
+            const [deductResult] = await connection.execute(
+                'UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?',
+                [transferAmount, fromUserId, transferAmount]
+            );
+            if (deductResult.affectedRows === 0) {
+                throw new Error('Insufficient balance');
+            }
+        } else {
+            await connection.execute('UPDATE users SET balance = balance - ? WHERE id = ?', [transferAmount, fromUserId]);
         }
 
-        // Update balances
-        await connection.execute('UPDATE users SET balance = balance - ? WHERE id = ?', [amount, fromUserId]);
-        await connection.execute('UPDATE users SET balance = balance + ? WHERE id = ?', [amount, toUserId]);
+        // Update receiver balance
+        await connection.execute('UPDATE users SET balance = balance + ? WHERE id = ?', [transferAmount, toUserId]);
 
         // Log transfer
         await connection.execute(
             'INSERT INTO internal_transfers (from_user_id, to_user_id, amount, notes) VALUES (?, ?, ?, ?)',
-            [fromUserId, toUserId, amount, notes]
+            [fromUserId, toUserId, transferAmount, notes]
         );
 
         await connection.commit();
