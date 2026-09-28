@@ -596,8 +596,19 @@ const placeOrder = async (req, res) => {
                 return res.status(400).json({ message: 'Live price not available. Please login to Zerodha and ensure the symbol is available.' });
             }
         }
-
-        const executionPrice = price ? parseFloat(price) : (order_type === 'MARKET' ? liveMarketPrice : 0);
+        let executionPrice = 0;
+        if (order_type === 'MARKET') {
+            // For MARKET orders, strictly enforce server-side liveMarketPrice.
+            // Client-supplied 'price' is strictly ignored to prevent price manipulation.
+            executionPrice = parseFloat(liveMarketPrice);
+        } else {
+            // For LIMIT / PENDING orders, validate client's target price
+            const parsedPrice = parseFloat(price);
+            if (!price || isNaN(parsedPrice) || parsedPrice <= 0) {
+                return res.status(400).json({ message: 'A valid price greater than 0 is required for Limit/Pending orders' });
+            }
+            executionPrice = parsedPrice;
+        }
         let marginRequired = 0;
 
         if (isNaN(executionPrice) || executionPrice <= 0) {
