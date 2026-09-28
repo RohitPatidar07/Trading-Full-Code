@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Trash2, SquarePen, X, Download, Loader2, Eye, ArrowRightLeft } from 'lucide-react';
+import { Trash2, SquarePen, X, Download, Loader2, Eye, ArrowLeftRight } from 'lucide-react';
 import * as api from '../../services/api';
 import { useAuth } from '../../context/AuthContext';
 import { useBrokerPermissions } from '../../hooks/useBrokerPermissions';
+import TransferFundModal from '../../components/TransferFundModal';
 
 const formatDate = (dateString) => {
     if (!dateString) return '—';
@@ -44,6 +45,7 @@ const TraderFundsPage = ({ onNavigate, onEditFund, onCreateFund }) => {
     const [downloading, setDownloading] = useState(false);
     const [deleteModal, setDeleteModal] = useState({ show: false, fund: null });
     const [deleting, setDeleting] = useState(false);
+    const [showTransferModal, setShowTransferModal] = useState(false);
 
     // Internal Transfer Modal State
     const [transferModal, setTransferModal] = useState(false);
@@ -278,16 +280,19 @@ const TraderFundsPage = ({ onNavigate, onEditFund, onCreateFund }) => {
                     </div>
                 </div>
 
-                <div className="flex flex-wrap gap-3">
+                <div className="flex flex-col sm:flex-row gap-3 items-stretch sm:items-center">
                     {!user?.isSubBroker && (user?.role !== 'BROKER' || permissions.payinAllowed === 'Yes' || permissions.payoutAllowed === 'Yes') && (
                         <button onClick={onCreateFund}
-                            className="w-full md:w-auto text-white font-bold py-2.5 px-8 rounded uppercase tracking-wide text-xs transition-all shadow-[0_4px_10px_rgba(76,175,80,0.3)] hover:shadow-[0_4px_20px_rgba(76,175,80,0.5)] active:scale-95"
+                            className="w-full sm:w-auto text-white font-bold py-2.5 px-8 rounded uppercase tracking-wide text-xs transition-all shadow-[0_4px_10px_rgba(76,175,80,0.3)] hover:shadow-[0_4px_20px_rgba(76,175,80,0.5)] active:scale-95"
                             style={{ background: 'linear-gradient(60deg, #288c6c, #4ea752)' }}>CREATE NEW FUND</button>
                     )}
-                    <button onClick={() => { setTransferModal(true); setTransferError(''); setTransferSuccess(''); }}
-                        className="w-full md:w-auto flex items-center justify-center gap-2 text-white font-bold py-2.5 px-6 rounded uppercase tracking-wide text-xs transition-all shadow-[0_4px_10px_rgba(59,130,246,0.3)] hover:shadow-[0_4px_20px_rgba(59,130,246,0.5)] active:scale-95 bg-blue-600 hover:bg-blue-500">
-                        <ArrowRightLeft className="w-4 h-4" />
-                        INTERNAL TRANSFER
+                    <button
+                        onClick={() => setShowTransferModal(true)}
+                        className="w-full sm:w-auto text-white font-bold py-2.5 px-6 rounded uppercase tracking-wide text-xs transition-all shadow-[0_4px_10px_rgba(30,136,229,0.3)] hover:shadow-[0_4px_20px_rgba(30,136,229,0.5)] active:scale-95 flex items-center justify-center gap-2"
+                        style={{ background: 'linear-gradient(60deg, #1e88e5, #42a5f5)' }}
+                    >
+                        <ArrowLeftRight className="w-4 h-4" />
+                        <span>TRANSFER FUNDS</span>
                     </button>
                 </div>
 
@@ -454,98 +459,14 @@ const TraderFundsPage = ({ onNavigate, onEditFund, onCreateFund }) => {
                 </div>
             )}
 
-            {/* Internal Transfer Modal */}
-            {transferModal && (
-                <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-                    <div className="bg-[#1e253a] border border-white/10 rounded-xl shadow-2xl max-w-lg w-full overflow-hidden">
-                        <div className="flex justify-between items-center p-4 border-b border-white/5 bg-[#181d2f]">
-                            <div className="flex items-center gap-2">
-                                <ArrowRightLeft className="w-5 h-5 text-blue-400" />
-                                <h3 className="text-white font-bold text-lg">Internal Fund Transfer</h3>
-                            </div>
-                            <button onClick={() => setTransferModal(false)} className="text-slate-400 hover:text-white transition-colors">
-                                <X className="w-5 h-5" />
-                            </button>
-                        </div>
-
-                        <form onSubmit={handleInternalTransferSubmit} className="p-6 space-y-4">
-                            {transferError && (
-                                <div className="p-3 bg-red-500/10 border border-red-500/30 rounded text-red-400 text-sm flex items-start gap-2">
-                                    <span className="font-bold">❌ Error:</span> {transferError}
-                                </div>
-                            )}
-
-                            {transferSuccess && (
-                                <div className="p-3 bg-green-500/10 border border-green-500/30 rounded text-green-400 text-sm flex items-start gap-2">
-                                    <span className="font-bold">✅ Success:</span> {transferSuccess}
-                                </div>
-                            )}
-
-                            <div>
-                                <label className="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Recipient User *</label>
-                                <select
-                                    value={transferData.toUserId}
-                                    onChange={(e) => setTransferData({ ...transferData, toUserId: e.target.value })}
-                                    className="w-full bg-[#141824] text-white px-3 py-2.5 rounded border border-white/10 focus:border-blue-500 outline-none text-sm"
-                                    required
-                                >
-                                    <option value="">Select Recipient Client / User</option>
-                                    {allUsers
-                                        .filter(u => String(u.id) !== String(user?.id) && String(u.id) !== String(user?.userId))
-                                        .map(u => (
-                                            <option key={u.id} value={u.id} className="bg-[#1e253a] text-white">
-                                                ID: {u.id} — {u.username} ({u.role}) {u.full_name ? `• ${u.full_name}` : ''}
-                                            </option>
-                                        ))
-                                    }
-                                </select>
-                            </div>
-
-                            <div>
-                                <label className="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Amount (₹) *</label>
-                                <input
-                                    type="text"
-                                    placeholder="Enter amount (e.g. 500 or test -100)"
-                                    value={transferData.amount}
-                                    onChange={(e) => setTransferData({ ...transferData, amount: e.target.value })}
-                                    className="w-full bg-[#141824] text-white px-3 py-2.5 rounded border border-white/10 focus:border-blue-500 outline-none text-sm"
-                                    required
-                                />
-                                <span className="text-[11px] text-slate-500 mt-1 block">Negative amounts and zero are strictly blocked.</span>
-                            </div>
-
-                            <div>
-                                <label className="block text-slate-400 text-xs font-bold uppercase tracking-wider mb-2">Notes / Remarks</label>
-                                <input
-                                    type="text"
-                                    placeholder="Optional transfer note"
-                                    value={transferData.notes}
-                                    onChange={(e) => setTransferData({ ...transferData, notes: e.target.value })}
-                                    className="w-full bg-[#141824] text-white px-3 py-2.5 rounded border border-white/10 focus:border-blue-500 outline-none text-sm"
-                                />
-                            </div>
-
-                            <div className="flex gap-3 pt-3">
-                                <button
-                                    type="button"
-                                    onClick={() => setTransferModal(false)}
-                                    className="flex-1 py-2.5 rounded bg-slate-700 hover:bg-slate-600 text-white font-bold text-sm transition-all"
-                                >
-                                    CANCEL
-                                </button>
-                                <button
-                                    type="submit"
-                                    disabled={transferLoading}
-                                    className="flex-1 py-2.5 rounded bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm transition-all shadow-lg disabled:opacity-50 flex items-center justify-center gap-2"
-                                >
-                                    {transferLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
-                                    {transferLoading ? 'TRANSFERRING...' : 'TRANSFER FUNDS'}
-                                </button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-            )}
+            {/* Internal Fund Transfer Modal */}
+            <TransferFundModal
+                isOpen={showTransferModal}
+                onClose={() => setShowTransferModal(false)}
+                onSuccess={() => fetchFunds()}
+                currentUser={user}
+                allUsers={allUsers}
+            />
         </div>
     );
 };

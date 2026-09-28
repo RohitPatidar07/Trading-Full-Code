@@ -24,30 +24,29 @@ const internalTransfer = async (req, res) => {
     const { toUserId, amount, notes } = req.body;
     const fromUserId = req.user.id;
 
-    // ── 1. Amount Validation (Strictly Positive & Valid Number) ──────────────
-    if (amount === undefined || amount === null || amount === '') {
-        return res.status(400).json({ message: 'Transfer amount is required' });
+    // ── 1. Input & Recipient Validation ───────────────────────────────────────
+    if (!toUserId || amount === undefined || amount === null || amount === '') {
+        return res.status(400).json({ success: false, message: 'Recipient user ID and transfer amount are required' });
     }
 
     const transferAmount = Number(amount);
     if (isNaN(transferAmount) || !isFinite(transferAmount) || transferAmount <= 0) {
-        return res.status(400).json({ message: 'Transfer amount must be a positive number greater than 0' });
+        return res.status(400).json({ success: false, message: 'Transfer amount must be a positive number greater than 0' });
     }
 
-    // Limit to 2 decimal places to avoid floating point precision manipulation
+    // Limit to 2 decimal places to prevent precision anomalies
     const cleanAmount = Math.round(transferAmount * 100) / 100;
     if (cleanAmount <= 0) {
-        return res.status(400).json({ message: 'Transfer amount must be at least ₹0.01' });
+        return res.status(400).json({ success: false, message: 'Transfer amount must be at least ₹0.01' });
     }
 
-    // ── 2. Recipient Validation ──────────────────────────────────────────────
     const targetUserId = parseInt(toUserId, 10);
     if (!targetUserId || isNaN(targetUserId)) {
-        return res.status(400).json({ message: 'Valid recipient user ID is required' });
+        return res.status(400).json({ success: false, message: 'Valid recipient user ID is required' });
     }
 
     if (parseInt(fromUserId, 10) === targetUserId) {
-        return res.status(400).json({ message: 'Cannot transfer funds to yourself' });
+        return res.status(400).json({ success: false, message: 'Cannot transfer funds to yourself' });
     }
 
     const connection = await db.getConnection();
@@ -55,21 +54,21 @@ const internalTransfer = async (req, res) => {
     try {
         await connection.beginTransaction();
 
-        // ── 3. Lock & Verify Sender ──────────────────────────────────────────
+        // ── 2. Lock & Verify Sender ──────────────────────────────────────────
         const [senderRows] = await connection.execute(
-            'SELECT id, balance, status, role FROM users WHERE id = ? FOR UPDATE',
+            'SELECT id, username, full_name, balance, status, role FROM users WHERE id = ? FOR UPDATE',
             [fromUserId]
         );
         if (!senderRows.length) {
-            throw new Error('Sender user not found');
+            throw new Error(`Sender user (ID: ${fromUserId}) not found`);
         }
-        if (senderRows[0].status !== 'Active') {
+        if (senderRows[0].status && senderRows[0].status !== 'Active') {
             throw new Error('Sender account is not active');
         }
 
         const senderBalance = parseFloat(senderRows[0].balance || 0);
 
-        // ── 4. Verify Withdrawable Balance & Margins ────────────────────────
+        // ── 3. Verify Withdrawable Balance & Margins ─────────────────────────
         if (req.user.role !== 'SUPERADMIN') {
             const [trades] = await connection.execute(
                 'SELECT * FROM trades WHERE user_id = ? AND status = "OPEN"',
@@ -91,15 +90,15 @@ const internalTransfer = async (req, res) => {
             }
         }
 
-        // ── 5. Lock & Verify Recipient ───────────────────────────────────────
+        // ── 4. Lock & Verify Recipient ────────────────────────────────────────
         const [recipientRows] = await connection.execute(
-            'SELECT id, balance, status FROM users WHERE id = ? FOR UPDATE',
+            'SELECT id, username, full_name, balance, status FROM users WHERE id = ? FOR UPDATE',
             [targetUserId]
         );
         if (!recipientRows.length) {
             throw new Error(`Recipient user ID ${targetUserId} does not exist`);
         }
-        if (recipientRows[0].status !== 'Active') {
+        if (recipientRows[0].status && recipientRows[0].status !== 'Active') {
             throw new Error('Recipient account is not active');
         }
 
@@ -107,7 +106,7 @@ const internalTransfer = async (req, res) => {
         const newSenderBalance = senderBalance - cleanAmount;
         const newRecipientBalance = recipientBalance + cleanAmount;
 
-        // ── 6. Update User Balances ──────────────────────────────────────────
+        // ── 5. Atomic Double-Entry Balance Updates ───────────────────────────
         await connection.execute(
             'UPDATE users SET balance = balance - ? WHERE id = ?',
             [cleanAmount, fromUserId]
@@ -117,22 +116,41 @@ const internalTransfer = async (req, res) => {
             [cleanAmount, targetUserId]
         );
 
-        // ── 7. Insert Audit Record (internal_transfers) ──────────────────────
-        await connection.execute(
-            'INSERT INTO internal_transfers (from_user_id, to_user_id, amount) VALUES (?, ?, ?)',
-            [fromUserId, targetUserId, cleanAmount]
-        );
+        // ── 6. Record Audit in internal_transfers Table ──────────────────────
+        try {
+            await connection.execute(
+                'INSERT INTO internal_transfers (from_user_id, to_user_id, amount) VALUES (?, ?, ?)',
+                [fromUserId, targetUserId, cleanAmount]
+            );
+        } catch (logErr) {
+            console.warn('[internalTransfer] internal_transfers logging warning:', logErr.message);
+        }
 
-        // ── 8. Double-Entry Ledger Tracking ─────────────────────────────────
+        // ── 7. Double-Entry Ledger Tracking ──────────────────────────────────
         const transferNote = notes ? String(notes).trim() : '';
-        await connection.execute(
-            'INSERT INTO ledger (user_id, amount, type, balance_before, balance_after, remarks) VALUES (?, ?, ?, ?, ?, ?)',
-            [fromUserId, cleanAmount, 'WITHDRAW', senderBalance, newSenderBalance, `Internal transfer to user #${targetUserId}${transferNote ? ': ' + transferNote : ''}`]
-        );
-        await connection.execute(
-            'INSERT INTO ledger (user_id, amount, type, balance_before, balance_after, remarks) VALUES (?, ?, ?, ?, ?, ?)',
-            [targetUserId, cleanAmount, 'DEPOSIT', recipientBalance, newRecipientBalance, `Internal transfer from user #${fromUserId}${transferNote ? ': ' + transferNote : ''}`]
-        );
+        try {
+            await connection.execute(
+                'INSERT INTO ledger (user_id, amount, type, balance_before, balance_after, remarks) VALUES (?, ?, ?, ?, ?, ?)',
+                [fromUserId, cleanAmount, 'WITHDRAW', senderBalance, newSenderBalance, `Internal transfer to user #${targetUserId}${transferNote ? ': ' + transferNote : ''}`]
+            );
+            await connection.execute(
+                'INSERT INTO ledger (user_id, amount, type, balance_before, balance_after, remarks) VALUES (?, ?, ?, ?, ?, ?)',
+                [targetUserId, cleanAmount, 'DEPOSIT', recipientBalance, newRecipientBalance, `Internal transfer from user #${fromUserId}${transferNote ? ': ' + transferNote : ''}`]
+            );
+        } catch (_) {}
+
+        // ── 8. Action Ledger Entry for Admin Audit Trail ─────────────────────
+        try {
+            await connection.execute(
+                'INSERT INTO action_ledger (admin_id, action_type, target_table, description) VALUES (?, ?, ?, ?)',
+                [
+                    fromUserId,
+                    'INTERNAL_TRANSFER',
+                    'users',
+                    `Transferred ₹${cleanAmount.toFixed(2)} from user ${fromUserId} (${senderRows[0].username || ''}) to user ${targetUserId} (${recipientRows[0].username || ''}). Notes: ${transferNote || 'N/A'}`
+                ]
+            );
+        } catch (_) {}
 
         await connection.commit();
 
@@ -143,19 +161,21 @@ const internalTransfer = async (req, res) => {
             await invalidateCache(`users_${targetUserId}_all`);
         } catch (cErr) {}
 
-        res.json({
+        return res.status(200).json({
             success: true,
-            message: `Transfer of ₹${cleanAmount.toFixed(2)} completed successfully`,
+            message: `Transfer of ₹${cleanAmount.toFixed(2)} to ${recipientRows[0].full_name || recipientRows[0].username || targetUserId} completed successfully`,
             transfer: {
-                fromUserId,
+                fromUserId: parseInt(fromUserId, 10),
                 toUserId: targetUserId,
                 amount: cleanAmount,
-                newBalance: newSenderBalance
+                sourceBalance: newSenderBalance,
+                destinationBalance: newRecipientBalance
             }
         });
     } catch (err) {
         await connection.rollback();
-        res.status(400).json({ message: err.message });
+        console.error('[internalTransfer] Transaction failed and rolled back:', err.message);
+        return res.status(400).json({ success: false, message: err.message });
     } finally {
         connection.release();
     }

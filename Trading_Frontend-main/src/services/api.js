@@ -177,14 +177,25 @@ export const deleteFund = async (id) => {
     return response.data;
 };
 
-export const internalTransfer = async (data) => {
-    const response = await api.post('/portfolio/transfer', data);
-    return response.data;
-};
 
 // ─── MARGIN ──────────────────────────────────────────
 export const getNetHoldingMargin = async (clientId) => {
     const response = await api.get(`/portfolio/${clientId}/margin`);
+    return response.data;
+};
+
+// ─── INTERNAL DATA & FUND TRANSFER ──────────────────
+export const internalTransfer = async (data) => {
+    const response = await api.post('/portfolio/transfer', {
+        toUserId: parseInt(data.toUserId, 10),
+        amount: parseFloat(data.amount),
+        notes: data.notes || ''
+    });
+    return response.data;
+};
+
+export const getInternalTransfers = async (params = {}) => {
+    const response = await api.get('/portfolio/ledger', { params });
     return response.data;
 };
 
