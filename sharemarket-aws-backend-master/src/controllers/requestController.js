@@ -70,9 +70,12 @@ const updateRequestStatus = async (req, res) => {
         const request = requests[0];
 
         if (status === 'APPROVED') {
-            // 2. Get User Details
-            const [userRows] = await connection.execute('SELECT balance FROM users WHERE id = ?', [request.user_id]);
+            // 2. Get User Details with row lock to prevent race condition
+            const [userRows] = await connection.execute('SELECT balance FROM users WHERE id = ? FOR UPDATE', [request.user_id]);
+            if (!userRows.length) throw new Error('User not found');
             const user = userRows[0];
+            const currentBal = parseFloat(user.balance || 0);
+            const reqAmt = parseFloat(request.amount);
 
             if (request.type === 'WITHDRAW') {
                 // Fetch Open Trades and Config
@@ -81,24 +84,31 @@ const updateRequestStatus = async (req, res) => {
                 const clientConfig = settings.length > 0 ? JSON.parse(settings[0].config_json || '{}') : {};
 
                 const blockedMargin = MarginUtils.calculateTotalRequiredHoldingMargin(trades, clientConfig);
-                const withdrawable = user.balance - blockedMargin;
+                const withdrawable = currentBal - blockedMargin;
 
-                if (request.amount > withdrawable) {
+                if (reqAmt > withdrawable) {
                     throw new Error(`Insufficient Withdrawable Balance. Required Holding Margin: ₹${blockedMargin.toFixed(2)}, Available to Withdraw: ₹${withdrawable.toFixed(2)}`);
                 }
+
+                const [deductRes] = await connection.execute(
+                    'UPDATE users SET balance = balance - ? WHERE id = ? AND balance >= ?',
+                    [reqAmt, request.user_id, reqAmt]
+                );
+                if (deductRes.affectedRows === 0) {
+                    throw new Error('Insufficient balance');
+                }
+            } else {
+                await connection.execute('UPDATE users SET balance = balance + ? WHERE id = ?', [reqAmt, request.user_id]);
             }
 
-            const operator = request.type === 'DEPOSIT' ? '+' : '-';
-            await connection.execute(`UPDATE users SET balance = balance ${operator} ? WHERE id = ?`, [request.amount, request.user_id]);
-
-            // 3. Get New Balance for Ledger
+            // 3. Get accurate New Balance inside locked transaction for Ledger
             const [updatedUserRows] = await connection.execute('SELECT balance FROM users WHERE id = ?', [request.user_id]);
-            const newBalance = updatedUserRows[0].balance;
+            const newBalance = parseFloat(updatedUserRows[0]?.balance || 0);
 
             // 4. Record in Ledger
             await connection.execute(
                 'INSERT INTO ledger (user_id, amount, type, balance_after, remarks) VALUES (?, ?, ?, ?, ?)',
-                [request.user_id, request.amount, request.type, newBalance, remark || `Request Approved: ${request.type}`]
+                [request.user_id, reqAmt, request.type, newBalance, remark || `Request Approved: ${request.type}`]
             );
         }
 
