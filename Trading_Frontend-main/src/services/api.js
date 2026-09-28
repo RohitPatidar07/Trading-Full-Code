@@ -177,6 +177,7 @@ export const deleteFund = async (id) => {
     return response.data;
 };
 
+
 // ─── MARGIN ──────────────────────────────────────────
 export const getNetHoldingMargin = async (clientId) => {
     const response = await api.get(`/portfolio/${clientId}/margin`);

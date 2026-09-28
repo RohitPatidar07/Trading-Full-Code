@@ -47,6 +47,13 @@ const TraderFundsPage = ({ onNavigate, onEditFund, onCreateFund }) => {
     const [deleting, setDeleting] = useState(false);
     const [showTransferModal, setShowTransferModal] = useState(false);
 
+    // Internal Transfer Modal State
+    const [transferModal, setTransferModal] = useState(false);
+    const [transferData, setTransferData] = useState({ toUserId: '', amount: '', notes: '' });
+    const [transferLoading, setTransferLoading] = useState(false);
+    const [transferError, setTransferError] = useState('');
+    const [transferSuccess, setTransferSuccess] = useState('');
+
     // Pagination
     const PAGE_SIZE = 15;
     const [currentPage, setCurrentPage] = useState(1);
@@ -193,6 +200,33 @@ const TraderFundsPage = ({ onNavigate, onEditFund, onCreateFund }) => {
         if (right < totalPages - 1) pages.push('...');
         if (totalPages > 1) pages.push(totalPages);
         return pages;
+    };
+
+    const handleInternalTransferSubmit = async (e) => {
+        e.preventDefault();
+        setTransferError('');
+        setTransferSuccess('');
+
+        if (!transferData.toUserId) {
+            setTransferError('Please select a recipient user');
+            return;
+        }
+
+        setTransferLoading(true);
+        try {
+            const res = await api.internalTransfer(transferData);
+            setTransferSuccess(res.message || 'Transfer completed successfully!');
+            setTransferData({ toUserId: '', amount: '', notes: '' });
+            fetchFunds();
+            setTimeout(() => {
+                setTransferModal(false);
+                setTransferSuccess('');
+            }, 1800);
+        } catch (err) {
+            setTransferError(err.response?.data?.message || err.message || 'Transfer failed');
+        } finally {
+            setTransferLoading(false);
+        }
     };
 
     return (
