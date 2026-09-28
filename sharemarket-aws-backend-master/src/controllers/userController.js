@@ -792,7 +792,7 @@ const recalculateBrokerage = async (req, res) => {
 
         // Get all closed trades
         const [trades] = await db.execute(
-            'SELECT id, symbol, qty, entry_price, exit_price, type, market_type FROM trades WHERE user_id = ? AND status = "CLOSED"',
+            'SELECT id, symbol, qty, entry_price, exit_price, type, market_type, lot_size_at_entry FROM trades WHERE user_id = ? AND status = "CLOSED"',
             [userId]
         );
 
@@ -806,6 +806,9 @@ const recalculateBrokerage = async (req, res) => {
         for (const trade of trades) {
             let brokerage = 0;
             const seg = segmentMap[trade.market_type || 'MCX'];
+            const resolvedLotSize = parseFloat(trade.lot_size_at_entry) > 0
+                ? parseFloat(trade.lot_size_at_entry)
+                : getLotSize(trade.symbol, trade.market_type || 'MCX');
 
             if (seg) {
                 const rate = parseFloat(seg.brokerage_value || 0);
@@ -814,8 +817,7 @@ const recalculateBrokerage = async (req, res) => {
                 if (type === 'PER_LOT' || type === 'PER LOT') {
                     brokerage = trade.qty * rate;
                 } else if (type === 'PER_CRORE' || type === 'PER CRORE') {
-                    const lotSize = getLotSize(trade.symbol, trade.market_type || 'MCX');
-                    const turnover = (parseFloat(trade.entry_price) + parseFloat(trade.exit_price || 0)) * trade.qty * lotSize;
+                    const turnover = (parseFloat(trade.entry_price) + parseFloat(trade.exit_price || 0)) * trade.qty * resolvedLotSize;
                     brokerage = (turnover / 10000000) * rate;
                 } else {
                     brokerage = trade.qty * rate;
@@ -843,8 +845,7 @@ const recalculateBrokerage = async (req, res) => {
                     if (brokerageType === 'per_lot') {
                         brokerage = trade.qty * brokeragePerLot;
                     } else {
-                        const lotSize = getLotSize(trade.symbol, 'MCX');
-                        const turnover = trade.qty * lotSize * (parseFloat(trade.entry_price) + parseFloat(trade.exit_price || 0));
+                        const turnover = trade.qty * resolvedLotSize * (parseFloat(trade.entry_price) + parseFloat(trade.exit_price || 0));
                         brokerage = (turnover / 10000000) * brokeragePerLot;
                     }
                 }

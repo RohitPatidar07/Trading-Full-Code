@@ -32,19 +32,20 @@ const executeAddFund = async (connection, { userId, amount }) => {
 
     console.log(`[ADD_FUND] Fetching user ${userId}`);
     const [rows] = await connection.execute(
-        'SELECT id, balance FROM users WHERE id = ?', [userId]
+        'SELECT id, balance FROM users WHERE id = ? FOR UPDATE', [userId]
     );
     if (!rows.length) {
         throw new Error(`User ${userId} not found`);
     }
 
-    const newBalance = parseFloat(rows[0].balance || 0) + amt;
 
-    console.log(`[ADD_FUND] Updating user ${userId} balance: ${rows[0].balance} → ${newBalance}`);
     await connection.execute(
         'UPDATE users SET balance = balance + ? WHERE id = ?',
         [amt, userId]
     );
+
+    const [updatedRows] = await connection.execute('SELECT balance FROM users WHERE id = ?', [userId]);
+    const newBalance = parseFloat(updatedRows[0]?.balance || 0);
 
     console.log(`[ADD_FUND] Inserting ledger entry for DEPOSIT`);
     await connection.execute(

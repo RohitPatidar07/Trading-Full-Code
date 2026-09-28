@@ -49,7 +49,7 @@ class RMSService {
         try {
             // 1. Get all open trades for this user
             const [trades] = await db.execute(
-                "SELECT id, symbol, type, qty, entry_price, market_type FROM trades WHERE user_id = ? AND status = 'OPEN' AND is_pending = 0",
+                "SELECT id, symbol, type, qty, entry_price, market_type, last_market_price, is_carried_forward, last_settlement_price FROM trades WHERE user_id = ? AND status = 'OPEN' AND is_pending = 0",
                 [user.id]
             );
 
@@ -66,15 +66,41 @@ class RMSService {
             let totalPnL = 0;
             const commodityLotService = require('./CommodityLotService');
             for (const trade of trades) {
-                const liveData = marketDataService.getPrice(trade.symbol);
-                if (!liveData) continue;
+                const cleanSymbol = trade.symbol.includes(':') ? trade.symbol.split(':')[1] : trade.symbol;
+                const mType = (trade.market_type || 'MCX').toUpperCase();
+                const prefix = mType === 'EQUITY' ? 'NSE' : (mType === 'OPTIONS' ? 'NFO' : mType);
+                const searchPatterns = [trade.symbol, `${prefix}:${cleanSymbol}`, cleanSymbol];
+
+                let liveData = null;
+                for (const p of searchPatterns) {
+                    const data = marketDataService.getPrice(p);
+                    if (data && (data.ltp || data.bid || data.ask)) {
+                        liveData = data;
+                        break;
+                    }
+                }
+
+                let currentPrice = null;
+                if (liveData) {
+                    currentPrice = trade.type === 'BUY'
+                        ? (liveData.bid && liveData.bid > 0 ? liveData.bid : liveData.ltp)
+                        : (liveData.ask && liveData.ask > 0 ? liveData.ask : liveData.ltp);
+                }
+
+                // If live stream tick is missing, use last recorded market price
+                if ((!currentPrice || currentPrice <= 0) && trade.last_market_price !== null && trade.last_market_price !== undefined && parseFloat(trade.last_market_price) > 0) {
+                    currentPrice = parseFloat(trade.last_market_price);
+                }
+
+                if (!currentPrice || currentPrice <= 0) {
+                    // No valid market price exists anywhere; skip this trade rather than calculating fake 0 PnL
+                    continue;
+                }
 
                 const baselinePrice = (trade.is_carried_forward || trade.status === 'HOLD') && trade.last_settlement_price !== null && trade.last_settlement_price !== undefined
                     ? parseFloat(trade.last_settlement_price)
                     : parseFloat(trade.entry_price);
 
-                const currentPrice = trade.type === 'BUY' ? (liveData.bid || liveData.ltp) : (liveData.ask || liveData.ltp);
-                
                 let pnl = 0;
                 if (commodityLotService.isCommodityScrip(trade.symbol, trade.market_type)) {
                     const calc = commodityLotService.calculatePnL(trade.symbol, trade.type, baselinePrice, currentPrice, trade.qty);

@@ -83,8 +83,8 @@ const AccountScreen = ({ navigation }) => {
                 { text: "Cancel", style: "cancel" },
                 { 
                     text: "Logout", 
-                    onPress: () => {
-                        api.clearSession(true);
+                    onPress: async () => {
+                        await api.logout();
                         navigation.navigate('Login');
                     }, 
                     style: 'destructive' 

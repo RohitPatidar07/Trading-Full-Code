@@ -5,7 +5,7 @@ import { io } from 'socket.io-client';
 import * as api from '../../services/api';
 import { formatPrice as fmt, formatPriceFallback as fmtPrice } from '../../utils/formatPrice';
 import { displaySymbol } from '../../utils/marketUtils';
-
+import AllTickHealthCard from '../../components/AllTickHealthCard';
 
 const MarketDataPage = () => {
     const navigate = useNavigate();
@@ -167,23 +167,19 @@ const MarketDataPage = () => {
 
             {/* Content */}
             <div className="flex-1 overflow-auto">
+                <div className="px-3 sm:px-6 pt-3 pb-1">
+                    <AllTickHealthCard onRefreshParent={fetchInitial} />
+                </div>
+
                 {loading && activeData.length === 0 ? (
                     <div className="flex items-center justify-center h-64">
                         <Loader2 className="w-8 h-8 animate-spin text-amber-500" />
                     </div>
                 ) : activeData.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-64 gap-4 px-10 text-center">
-                        <div className="text-slate-500 text-sm">
-                            {tab === 'crypto' ? 'Binance data currently unavailable.' : 'Twelve Data data currently unavailable.'}
+                        <div className="text-slate-400 text-sm">
+                            {tab === 'crypto' ? 'AllTick Crypto feed connecting...' : tab === 'forex' ? 'AllTick Forex feed connecting...' : 'AllTick Commodity feed connecting...'}
                         </div>
-                        {tab === 'crypto' && (
-                            <div className="p-3 bg-red-500/10 border border-red-500/20 rounded-lg max-w-xs">
-                                <p className="text-red-400 text-[11px]">
-                                    Possibility: Server IP is blocked by Binance.
-                                    This frequently happens on Railway hosting.
-                                </p>
-                            </div>
-                        )}
                         <button onClick={fetchInitial} className="text-amber-500 text-xs hover:underline">
                             Try Refreshing
                         </button>
@@ -315,8 +311,8 @@ const MarketDataPage = () => {
             </div>
 
             {/* Footer — responsive */}
-            <div className="bg-[#1a2240] border-t border-white/5 px-3 sm:px-6 py-1.5 shrink-0 flex items-center justify-between text-[9px] sm:text-[10px] text-slate-600">
-                <span>Twelve Data | WS: {wsConnected ? 'On' : 'Off'}</span>
+            <div className="bg-[#1a2240] border-t border-white/5 px-3 sm:px-6 py-1.5 shrink-0 flex items-center justify-between text-[9px] sm:text-[10px] text-slate-500">
+                <span>AllTick Realtime Feed | WS: {wsConnected ? 'On' : 'Off'}</span>
                 <span>{filtered.length} {tab === 'crypto' ? 'coins' : 'pairs'}</span>
             </div>
         </div>

@@ -13,8 +13,9 @@ class PortfolioService {
 
         // Enhance with live P&L
         return rows.map(pos => {
-            const livePrice = marketDataService.getPrice(pos.symbol)?.ltp || pos.avg_price;
-            const pnl = (livePrice - pos.avg_price) * pos.quantity;
+            const ltp = marketDataService.getPrice(pos.symbol)?.ltp;
+            const livePrice = (ltp && parseFloat(ltp) > 0) ? parseFloat(ltp) : (pos.last_price ? parseFloat(pos.last_price) : parseFloat(pos.avg_price || 0));
+            const pnl = (livePrice - parseFloat(pos.avg_price || 0)) * pos.quantity;
             return {
                 ...pos,
                 last_price: livePrice,
@@ -29,8 +30,9 @@ class PortfolioService {
         );
         
         return rows.map(hold => {
-            const livePrice = marketDataService.getPrice(hold.symbol)?.ltp || hold.avg_price;
-            const pnl = (livePrice - hold.avg_price) * hold.quantity;
+            const ltp = marketDataService.getPrice(hold.symbol)?.ltp;
+            const livePrice = (ltp && parseFloat(ltp) > 0) ? parseFloat(ltp) : (hold.last_price ? parseFloat(hold.last_price) : parseFloat(hold.avg_price || 0));
+            const pnl = (livePrice - parseFloat(hold.avg_price || 0)) * hold.quantity;
             return {
                 ...hold,
                 last_price: livePrice,

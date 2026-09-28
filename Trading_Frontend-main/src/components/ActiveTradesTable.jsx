@@ -1,9 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { getTrades } from '../services/api';
+import OrderTraceModal from './modals/OrderTraceModal';
 
 const ActiveTradesTable = ({ clientId }) => {
     const [data, setData] = useState([]);
     const [loading, setLoading] = useState(true);
+    const [traceTradeId, setTraceTradeId] = useState(null);
 
     useEffect(() => {
         const fetchTrades = async () => {
@@ -52,6 +54,13 @@ const ActiveTradesTable = ({ clientId }) => {
                         <span className="text-white font-medium">{parseFloat(item.holding_margin !== undefined ? item.holding_margin : (item.margin_used || 0)).toFixed(2)}</span>
                     </div>
                 </div>
+                <button
+                    type="button"
+                    onClick={() => setTraceTradeId(item.id)}
+                    className="w-full py-1.5 rounded text-xs font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition-all cursor-pointer flex items-center justify-center gap-1.5"
+                >
+                    <span>🔍</span> Trace Order Pipeline
+                </button>
             </div>
         );
     };
@@ -83,13 +92,14 @@ const ActiveTradesTable = ({ clientId }) => {
                                 <th className="px-6 py-4">Active P/L</th>
                                 <th className="px-6 py-4">Brokerage</th>
                                 <th className="px-6 py-4">Holding Margin Required</th>
+                                <th className="px-6 py-4 text-center">Diagnostics</th>
                             </tr>
                         </thead>
                         <tbody className="text-[13px] text-slate-300">
                             {loading ? (
-                                <tr><td colSpan="12" className="px-6 py-8 text-center text-slate-500">Loading...</td></tr>
+                                <tr><td colSpan="13" className="px-6 py-8 text-center text-slate-500">Loading...</td></tr>
                             ) : data.length === 0 ? (
-                                <tr><td colSpan="12" className="px-6 py-8 text-center text-slate-500">No active trades</td></tr>
+                                <tr><td colSpan="13" className="px-6 py-8 text-center text-slate-500">No active trades</td></tr>
                             ) : data.map((item) => {
                                 const pl = parseFloat(item.pnl || 0);
                                 const buyTurnover = item.type === 'BUY' ? (parseFloat(item.entry_price) * item.qty).toFixed(2) : '0.00';
@@ -124,6 +134,16 @@ const ActiveTradesTable = ({ clientId }) => {
                                             )}
                                         </td>
                                         <td className="px-6 py-4">{parseFloat(item.holding_margin !== undefined ? item.holding_margin : (item.margin_used || 0)).toFixed(2)}</td>
+                                        <td className="px-6 py-4 text-center">
+                                            <button
+                                                type="button"
+                                                onClick={() => setTraceTradeId(item.id)}
+                                                className="px-2.5 py-1 rounded text-xs font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition-all cursor-pointer inline-flex items-center gap-1"
+                                                title="Trace Order Pipeline"
+                                            >
+                                                <span>🔍</span> Trace
+                                            </button>
+                                        </td>
                                     </tr>
                                 );
                             })}
@@ -142,8 +162,16 @@ const ActiveTradesTable = ({ clientId }) => {
                     <MobileActiveTradeCard key={item.id} item={item} />
                 ))}
             </div>
+
+            {/* Order Trace Modal */}
+            <OrderTraceModal
+                isOpen={!!traceTradeId}
+                tradeId={traceTradeId}
+                onClose={() => setTraceTradeId(null)}
+            />
         </div>
     );
 };
+
 
 export default ActiveTradesTable;

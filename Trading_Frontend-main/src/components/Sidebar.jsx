@@ -6,6 +6,7 @@ import { useBrokerPermissions, hasBrokerPermissionForMenu } from '../hooks/useBr
 const ALL_MENU_ITEMS = [
     { id: 'dashboard', label: 'Dashboard', icon: 'fa-table-columns' },
     { id: 'kite-dashboard', label: 'Live Quotes', icon: 'fa-chart-line' },
+    { id: 'market-data', label: 'AllTick Quotes', icon: 'fa-globe' },
     { id: 'voice-modulation', label: 'Voice Modulation', icon: 'fa-microphone' },
     { id: 'voice-history', label: 'Voice Recordings', icon: 'fa-compact-disc' },
     { id: 'market-watch', label: 'Market Watch', icon: 'fa-arrow-trend-up' },

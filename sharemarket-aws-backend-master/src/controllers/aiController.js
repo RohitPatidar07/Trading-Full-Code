@@ -801,7 +801,12 @@ const executeVoiceCommand = async (req, res) => {
 
         if (action === 'TRANSFER_FUND') {
             if (!fromUserId || !toUserId || amount == null) { await connection.rollback(); return res.status(400).json({ success: false, message: 'fromUserId, toUserId and amount required' }); }
+            if (parseInt(fromUserId, 10) === parseInt(toUserId, 10)) { await connection.rollback(); return res.status(400).json({ success: false, message: 'Cannot transfer funds to yourself' }); }
             const amt = parseFloat(amount);
+            if (isNaN(amt) || !isFinite(amt) || amt <= 0) {
+                await connection.rollback();
+                return res.status(400).json({ success: false, message: 'Transfer amount must be a positive number greater than 0' });
+            }
             const [fromRows] = await connection.execute('SELECT id, balance FROM users WHERE id = ? FOR UPDATE', [fromUserId]);
             if (!fromRows.length) { await connection.rollback(); return res.status(404).json({ success: false, message: `Source user ${fromUserId} not found` }); }
             const [toRows] = await connection.execute('SELECT id, balance FROM users WHERE id = ? FOR UPDATE', [toUserId]);
