@@ -178,38 +178,18 @@ const getClientLiveM2M = async (req, res) => {
             lotMap[r.symbol.toUpperCase()] = parseFloat(r.lot_size || 1);
         });
 
-        const { MCX_LOT_SIZES, getMcxBaseScrip } = require('../utils/symbolHelper');
+        const { MCX_LOT_SIZES, getMcxBaseScrip, getLotSize } = require('../utils/symbolHelper');
 
         const getMultiplier = (symbol, marketType, userConfig = null) => {
             const sym = symbol.toUpperCase();
             const mType = (marketType || 'MCX').toUpperCase();
 
-            // 1. NSE/Equity/Options/NFO generally use point-to-point (multiplier 1)
-            const isMcxSymbol = mType === 'MCX' || sym.startsWith('MCX:') ||
-                ['GOLD', 'SILVER', 'CRUDEOIL', 'NATURALGAS', 'COPPER', 'ZINC', 'NICKEL', 'LEAD', 'ALUMINIUM'].some(k => sym.includes(k));
-            if (!isMcxSymbol && (mType === 'EQUITY' || mType === 'NSE' || mType === 'NFO' || mType === 'OPTIONS')) {
+            // Pure Cash Equity uses point-to-point (multiplier 1)
+            if (mType === 'EQUITY' || (mType === 'NSE' && !sym.endsWith('FUT') && !sym.endsWith('CE') && !sym.endsWith('PE'))) {
                 return 1;
             }
 
-            // 2. Try Hardcoded MCX_LOT_SIZES (Point Values)
-            // CRITICAL SYNC: The mobile app uses hardcoded multipliers for P/L.
-            // We follow the same logic here to ensure cross-platform consistency.
-            const base = getMcxBaseScrip(symbol);
-            if (base && MCX_LOT_SIZES[base]) return MCX_LOT_SIZES[base];
-
-            // Try trimmed symbol (e.g. SILVER26MAYFUT -> SILVER)
-            const symTrimmed = symbol.split(':').pop().toUpperCase().replace(/\d+.*/, '');
-            if (MCX_LOT_SIZES[symTrimmed]) return MCX_LOT_SIZES[symTrimmed];
-
-            // NOTE: mcxLotMargins[scrip].LOT is the per-user position LIMIT (max lots allowed),
-            // NOT the exchange lot size. It must never be used as a P&L/turnover multiplier.
-            // Skipping that fallback intentionally.
-
-            // 4. Try Scrip Data Table (Fallback)
-            const cleanSym = symbol.includes(':') ? symbol.split(':')[1] : symbol;
-            if (lotMap[cleanSym.toUpperCase()] && lotMap[cleanSym.toUpperCase()] > 0) return lotMap[cleanSym.toUpperCase()];
-
-            return 1; // Default fallback
+            return getLotSize(symbol, mType);
         };
 
         // 3. Map for MarketDataService prefixes
@@ -521,35 +501,49 @@ const getClientLiveM2M = async (req, res) => {
                     : entryPrice;
 
                 // Use BID for BUY trades (exit by selling), ASK for SELL trades
-                const exitPrice = isBuy
-                    ? (liveData?.bid || liveData?.ltp || baselinePrice)
-                    : (liveData?.ask || liveData?.ltp || baselinePrice);
+                const marketPrice = isBuy
+                    ? (liveData?.bid && liveData.bid > 0 ? liveData.bid : (liveData?.ltp && liveData.ltp > 0 ? liveData.ltp : null))
+                    : (liveData?.ask && liveData.ask > 0 ? liveData.ask : (liveData?.ltp && liveData.ltp > 0 ? liveData.ltp : null));
+
+                const lastKnownPrice = trade.last_market_price !== null && trade.last_market_price !== undefined && parseFloat(trade.last_market_price) > 0
+                    ? parseFloat(trade.last_market_price)
+                    : null;
+
+                const exitPrice = marketPrice || lastKnownPrice || null;
 
                 let unrealizedPnl = 0;
-                const commodityLotService = require('../services/CommodityLotService');
-                if (commodityLotService.isCommodityScrip(trade.symbol, mType)) {
-                    const calc = commodityLotService.calculatePnL(trade.symbol, trade.type, baselinePrice, exitPrice, qty);
-                    unrealizedPnl = calc.pnlInr;
-                } else {
-                    const { calculateEquityPnL, calculateMcxPnL } = require('../utils/equityPnL');
-                    if (mType === 'MCX') {
-                        unrealizedPnl = calculateMcxPnL({
-                            type: trade.type,
-                            entryPrice: baselinePrice,
-                            exitPrice: exitPrice,
-                            qty: qty,
-                            lotSize: lotSize
-                        });
+                if (exitPrice !== null && exitPrice > 0) {
+                    const commodityLotService = require('../services/CommodityLotService');
+                    if (commodityLotService.isCommodityScrip(trade.symbol, mType)) {
+                        const calc = commodityLotService.calculatePnL(trade.symbol, trade.type, baselinePrice, exitPrice, qty);
+                        unrealizedPnl = calc.pnlInr;
                     } else {
-                        unrealizedPnl = calculateEquityPnL({
-                            type: trade.type,
-                            entryPrice: baselinePrice,
-                            exitPrice: exitPrice,
-                            qty: qty,
-                            lotSize: lotSize,
-                            tradeMode: trade.trade_mode,
-                            equityUnitsMode: trade.equity_units_mode
-                        });
+                        const { calculateEquityPnL, calculateMcxPnL } = require('../utils/equityPnL');
+                        const resolvedLot = (parseFloat(trade.lot_size_at_entry) > 0)
+                            ? parseFloat(trade.lot_size_at_entry)
+                            : lotSize;
+                        if (mType === 'MCX') {
+                            unrealizedPnl = calculateMcxPnL({
+                                type: trade.type,
+                                entryPrice: baselinePrice,
+                                exitPrice: exitPrice,
+                                qty: qty,
+                                qtyInput: trade.qty_input,
+                                lotSize: resolvedLot
+                            });
+                        } else {
+                            unrealizedPnl = calculateEquityPnL({
+                                type: trade.type,
+                                entryPrice: baselinePrice,
+                                exitPrice: exitPrice,
+                                qty: qty,
+                                qtyInput: trade.qty_input,
+                                actualQty: trade.actual_qty,
+                                lotSize: resolvedLot,
+                                tradeMode: trade.trade_mode,
+                                equityUnitsMode: trade.equity_units_mode
+                            });
+                        }
                     }
                 }
 
@@ -976,7 +970,7 @@ module.exports = {
 
             // 4. Calculate P/L for each open trade
             for (const trade of trades) {
-                let currentPrice = trade.entry_price;
+                let currentPrice = null;
                 try {
                     const cleanSymbol = trade.symbol.includes(':') ? trade.symbol.split(':')[1] : trade.symbol;
                     const marketType = (trade.market_type || 'MCX').toUpperCase();
@@ -986,44 +980,57 @@ module.exports = {
                     let liveData = null;
                     for (const s of possibleSymbols) {
                         liveData = marketDataService.getPrice(s);
-                        if (liveData) break;
+                        if (liveData && (liveData.ltp || liveData.bid || liveData.ask)) break;
                     }
 
-                    if (liveData && liveData.ltp) {
-                        currentPrice = liveData.ltp;
+                    if (liveData) {
+                        currentPrice = trade.type === 'BUY'
+                            ? (liveData.bid && liveData.bid > 0 ? liveData.bid : liveData.ltp)
+                            : (liveData.ask && liveData.ask > 0 ? liveData.ask : liveData.ltp);
                     }
                 } catch (_) { }
 
-                let pnl = 0;
-                const baselinePrice = (trade.is_carried_forward || trade.status === 'HOLD') && trade.last_settlement_price !== null && trade.last_settlement_price !== undefined
-                    ? parseFloat(trade.last_settlement_price)
-                    : parseFloat(trade.entry_price);
+                if ((!currentPrice || currentPrice <= 0) && trade.last_market_price !== null && trade.last_market_price !== undefined && parseFloat(trade.last_market_price) > 0) {
+                    currentPrice = parseFloat(trade.last_market_price);
+                }
 
-                const commodityLotService = require('../services/CommodityLotService');
-                if (commodityLotService.isCommodityScrip(trade.symbol, trade.market_type)) {
-                    const calc = commodityLotService.calculatePnL(trade.symbol, trade.type, baselinePrice, currentPrice, trade.qty);
-                    pnl = calc.pnlInr;
-                } else {
-                    const { calculateEquityPnL, calculateMcxPnL } = require('../utils/equityPnL');
-                    const mktType = (trade.market_type || '').toUpperCase();
-                    if (mktType === 'MCX') {
-                        pnl = calculateMcxPnL({
-                            type: trade.type,
-                            entryPrice: baselinePrice,
-                            exitPrice: currentPrice,
-                            qty: trade.qty,
-                            lotSize: trade.lot_size || 1
-                        });
+                let pnl = 0;
+                if (currentPrice !== null && currentPrice > 0) {
+                    const baselinePrice = (trade.is_carried_forward || trade.status === 'HOLD') && trade.last_settlement_price !== null && trade.last_settlement_price !== undefined
+                        ? parseFloat(trade.last_settlement_price)
+                        : parseFloat(trade.entry_price);
+
+                    const commodityLotService = require('../services/CommodityLotService');
+                    if (commodityLotService.isCommodityScrip(trade.symbol, trade.market_type)) {
+                        const calc = commodityLotService.calculatePnL(trade.symbol, trade.type, baselinePrice, currentPrice, trade.qty);
+                        pnl = calc.pnlInr;
                     } else {
-                        pnl = calculateEquityPnL({
-                            type: trade.type,
-                            entryPrice: baselinePrice,
-                            exitPrice: currentPrice,
-                            qty: trade.qty,
-                            lotSize: trade.lot_size || 1,
-                            tradeMode: trade.trade_mode,
-                            equityUnitsMode: trade.equity_units_mode
-                        });
+                        const { calculateEquityPnL, calculateMcxPnL } = require('../utils/equityPnL');
+                        const { getLotSize } = require('../utils/symbolHelper');
+                        const mktType = (trade.market_type || '').toUpperCase();
+                        const resolvedLot = parseFloat(trade.lot_size_at_entry || trade.lot_size) || getLotSize(trade.symbol, mktType);
+                        if (mktType === 'MCX') {
+                            pnl = calculateMcxPnL({
+                                type: trade.type,
+                                entryPrice: baselinePrice,
+                                exitPrice: currentPrice,
+                                qty: trade.qty,
+                                qtyInput: trade.qty_input,
+                                lotSize: resolvedLot
+                            });
+                        } else {
+                            pnl = calculateEquityPnL({
+                                type: trade.type,
+                                entryPrice: baselinePrice,
+                                exitPrice: currentPrice,
+                                qty: trade.qty,
+                                qtyInput: trade.qty_input,
+                                actualQty: trade.actual_qty,
+                                lotSize: resolvedLot,
+                                tradeMode: trade.trade_mode,
+                                equityUnitsMode: trade.equity_units_mode
+                            });
+                        }
                     }
                 }
 

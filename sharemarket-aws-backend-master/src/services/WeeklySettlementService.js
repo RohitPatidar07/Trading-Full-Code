@@ -195,12 +195,16 @@ async function processTraderSettlement({ userId, username, weekStart, weekEnd, s
                     marketDataService.getPrice(cleanSymbol);
             } catch (_) { }
 
-            let priceSource = 'fallback_entry';
-            let settlementPrice = (liveData && liveData.ltp)
-                ? (priceSource = 'live_ltp', parseFloat(liveData.ltp))
-                : parseFloat(trade.current_price || trade.exit_price || trade.entry_price || 0);
+            let priceSource = 'missing';
+            let settlementPrice = null;
 
-            if (!liveData || !liveData.ltp) {
+            if (liveData && liveData.ltp && parseFloat(liveData.ltp) > 0) {
+                settlementPrice = parseFloat(liveData.ltp);
+                priceSource = 'live_ltp';
+            } else if (trade.last_market_price !== null && trade.last_market_price !== undefined && parseFloat(trade.last_market_price) > 0) {
+                settlementPrice = parseFloat(trade.last_market_price);
+                priceSource = 'trade_last_market_price';
+            } else {
                 try {
                     const [scripRows] = await connection.execute(
                         `SELECT last_price FROM scrip_data WHERE symbol = ? OR symbol = ? LIMIT 1`,
@@ -213,6 +217,13 @@ async function processTraderSettlement({ userId, username, weekStart, weekEnd, s
                 } catch (_) { }
             }
 
+            if (settlementPrice === null || isNaN(settlementPrice) || settlementPrice <= 0) {
+                // 🛑 SAFETY: Never calculate MTM or settle a trade using entry_price when market data is unavailable.
+                // Safely defer this trade so its balance and position remain uncorrupted.
+                console.warn(`  ⚠️ [WeeklySettlement] DEFERRED: No valid market price found for trade #${trade.id} (${trade.symbol}). Skipping MTM settlement for this trade until valid market data is available.`);
+                continue;
+            }
+
             const baselinePrice = (trade.last_settlement_price !== null && trade.last_settlement_price !== undefined)
                 ? parseFloat(trade.last_settlement_price)
                 : parseFloat(trade.entry_price);
@@ -221,7 +232,7 @@ async function processTraderSettlement({ userId, username, weekStart, weekEnd, s
 
             let weeklyMtmPnl = 0;
             const commodityLotService = require('./CommodityLotService');
-            const { getMcxBaseScrip, MCX_LOT_SIZES } = require('../utils/symbolHelper');
+            const { getMcxBaseScrip, MCX_LOT_SIZES, getLotSize } = require('../utils/symbolHelper');
             const isCommodity = commodityLotService.isCommodityScrip(trade.symbol, trade.market_type);
 
             if (isCommodity) {
@@ -229,11 +240,10 @@ async function processTraderSettlement({ userId, username, weekStart, weekEnd, s
                 weeklyMtmPnl = calc.pnlInr;
                 console.log(`  📦 [Trade #${trade.id}] COMMODITY ${trade.symbol} | type=${trade.type} qty=${trade.qty} | baseline=${baselinePrice}(${baselineSource}) settlementPrice=${settlementPrice}(${priceSource}) | lotSize=${calc.lotSize} pnlUsd=${calc.pnlUsd.toFixed(4)} usdInr=${calc.usdInr} => MTM_INR=₹${weeklyMtmPnl.toFixed(2)}`);
             } else {
-                // ✅ For MCX: use same MCX_LOT_SIZES as TradeService (not lot_size_at_entry)
                 const { calculateEquityPnL, calculateMcxPnL } = require('../utils/equityPnL');
                 if (marketType === 'MCX') {
                     const base = getMcxBaseScrip(trade.symbol);
-                    lotSize = (base && MCX_LOT_SIZES[base]) ? MCX_LOT_SIZES[base] : parseFloat(trade.lot_size_at_entry || trade.lot_size || 1);
+                    lotSize = (base && MCX_LOT_SIZES[base]) ? MCX_LOT_SIZES[base] : (parseFloat(trade.lot_size_at_entry || trade.lot_size) || getLotSize(trade.symbol, 'MCX'));
                     weeklyMtmPnl = calculateMcxPnL({
                         type: trade.type,
                         entryPrice: baselinePrice,
@@ -242,7 +252,9 @@ async function processTraderSettlement({ userId, username, weekStart, weekEnd, s
                         lotSize: lotSize
                     });
                 } else {
-                    lotSize = parseFloat(trade.lot_size_at_entry || trade.lot_size || 1);
+                    lotSize = (parseFloat(trade.lot_size_at_entry || trade.lot_size) > 1)
+                        ? parseFloat(trade.lot_size_at_entry || trade.lot_size)
+                        : getLotSize(trade.symbol, marketType);
                     weeklyMtmPnl = calculateEquityPnL({
                         type: trade.type,
                         entryPrice: baselinePrice,
@@ -365,11 +377,14 @@ async function processTraderSettlement({ userId, username, weekStart, weekEnd, s
             }
         }
 
-        // 8. Update User's Balance and create Ledger Transaction Audit Trail for MTM PnL
-        await connection.execute(
-            `UPDATE users SET balance = ? WHERE id = ?`,
-            [closingBalance, userId]
-        );
+        // 8. Update User's Balance atomically using delta adjustment to prevent overwriting concurrent deposits/trades
+        const netAdjustment = closingBalance - parseFloat(user.balance || 0);
+        if (netAdjustment !== 0) {
+            await connection.execute(
+                `UPDATE users SET balance = balance + ? WHERE id = ?`,
+                [netAdjustment, userId]
+            );
+        }
 
         const remarksText = `Weekly Settlement ${weekStart} to ${weekEnd} | MTM PnL: ₹${totalUnrealizedMtmPnl.toFixed(2)}`;
 

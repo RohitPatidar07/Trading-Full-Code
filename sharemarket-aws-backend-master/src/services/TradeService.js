@@ -3,7 +3,7 @@ const mockEngine = require('../utils/mockEngine');
 const { logAction } = require('../controllers/systemController');
 const { invalidateCache } = require('../utils/cacheManager');
 const kiteService = require('../utils/kiteService');
-const { getLotSize, getMcxBaseScrip } = require('../utils/symbolHelper');
+const { getLotSize, getUniversalLotSize, getMcxBaseScrip } = require('../utils/symbolHelper');
 const { buildTradeLog } = require('../utils/logFormatter');
 
 // ═══════════════════════════════════════════════════════════════════
@@ -85,28 +85,42 @@ const syncPaperPosition = async (userId, symbol, connection = db) => {
  * Service to handle core Trade operations like closing and auto-squaring off.
  */
 class TradeService {
+    constructor() {
+        // Concurrency lock registry to prevent simultaneous execution for the same trade ID
+        this.closingLocks = new Set();
+    }
 
     /**
      * Closes a single trade by its ID.
      * Reusable for manual close, auto-close, and expiry square-off.
      */
     async closeTrade(tradeId, exitPrice = null, requesterId = 0, providedPnl = null, remark = null, closeIp = null) {
-        const connection = await db.getConnection();
+        // Tier 1 Concurrency Guard: Fast rejection if trade closure is already in-flight
+        if (this.closingLocks.has(tradeId)) {
+            throw new Error('TRADE_CLOSE_IN_PROGRESS');
+        }
+        this.closingLocks.add(tradeId);
+
+        let connection;
         try {
+            connection = await db.getConnection();
             await connection.beginTransaction();
 
-            // 1. Fetch trade and client settings
+            // 1. Fetch trade and client settings with Tier 2 Pessimistic Row Lock (FOR UPDATE)
             const [tradeRows] = await connection.execute(
                 `SELECT t.*, cs.config_json, cs.broker_id 
                  FROM trades t
                  JOIN client_settings cs ON t.user_id = cs.user_id
-                 WHERE t.id = ?`,
+                 WHERE t.id = ? FOR UPDATE`,
                 [tradeId]
             );
 
             if (tradeRows.length === 0) throw new Error('Trade not found');
             const trade = tradeRows[0];
             if (trade.status !== 'OPEN' && trade.status !== 'HOLD') throw new Error('Trade is already closed');
+
+            // 🔒 Pessimistic Row Lock to prevent balance race conditions during trade closure
+            await connection.execute('SELECT id, balance FROM users WHERE id = ? FOR UPDATE', [trade.user_id]);
 
             const clientConfig = JSON.parse(trade.config_json || '{}');
             const marginToRelease = parseFloat(trade.margin_used || 0);
@@ -131,10 +145,13 @@ class TradeService {
 
             // 2. Handle Pending Orders
             if (trade.is_pending == 1) {
-                await connection.execute(
-                    'UPDATE trades SET status = "CANCELLED", exit_price = entry_price, exit_time = NOW(), pnl = 0 WHERE id = ?',
+                const [cancelResult] = await connection.execute(
+                    'UPDATE trades SET status = "CANCELLED", exit_price = entry_price, exit_time = NOW(), pnl = 0 WHERE id = ? AND status IN ("OPEN", "HOLD")',
                     [tradeId]
                 );
+                if (cancelResult.affectedRows === 0) {
+                    throw new Error('TRADE_ALREADY_CLOSED');
+                }
                 await connection.execute(
                     'UPDATE users SET balance = balance + ? WHERE id = ?',
                     [marginToRelease, trade.user_id]
@@ -176,70 +193,16 @@ class TradeService {
             }
 
             // ══════════════════════════════════════════════════════════════════
-            // LOT SIZE CALCULATION (Sync with dashboardController.js)
+            // LOT SIZE CALCULATION (Unified Single Source of Truth)
             // ══════════════════════════════════════════════════════════════════
-            if (mType === 'MCX') {
-                const { getMcxBaseScrip, MCX_LOT_SIZES } = require('../utils/symbolHelper');
-                const base = getMcxBaseScrip(trade.symbol);
-                const symTrimmed = (trade.symbol || '').toUpperCase().replace(/\d+.*/, '');
-
-                // 1. Try Hardcoded MCX_LOT_SIZES first (Primary source)
-                if (base && MCX_LOT_SIZES[base]) {
-                    lotSize = MCX_LOT_SIZES[base];
-                } else if (MCX_LOT_SIZES[symTrimmed]) {
-                    lotSize = MCX_LOT_SIZES[symTrimmed];
-                }
-
-                console.log(`[TradeService] Final MCX Lot Size: ${trade.symbol} → ${lotSize}`);
+            if (trade.lot_size_at_entry && parseFloat(trade.lot_size_at_entry) > 0) {
+                lotSize = parseFloat(trade.lot_size_at_entry);
+            } else if (trade.lot_size && parseFloat(trade.lot_size) > 0) {
+                lotSize = parseFloat(trade.lot_size);
+            } else {
+                lotSize = await getUniversalLotSize(trade.symbol, mType, connection);
             }
-            else if (mType === 'EQUITY' || mType === 'NSE' || mType === 'NFO' || mType === 'OPTIONS') {
-                lotSize = 1;
-                if (trade.lot_size_at_entry && parseFloat(trade.lot_size_at_entry) > 0) {
-                    lotSize = parseFloat(trade.lot_size_at_entry);
-                } else if (trade.lot_size && parseFloat(trade.lot_size) > 0) {
-                    lotSize = parseFloat(trade.lot_size);
-                } else if (mType !== 'EQUITY') {
-                    try {
-                        const cleanSym = trade.symbol.includes(':') ? trade.symbol.split(':')[1] : trade.symbol;
-                        const [scripRows] = await connection.execute('SELECT lot_size FROM scrip_data WHERE symbol = ? OR symbol = ?', [trade.symbol, cleanSym]);
-                        if (scripRows.length > 0 && parseFloat(scripRows[0].lot_size) > 0) {
-                            lotSize = parseFloat(scripRows[0].lot_size);
-                        } else {
-                            if (cleanSym.includes('BANKNIFTY')) lotSize = 15;
-                            else if (cleanSym.includes('NIFTY')) lotSize = 25;
-                            else if (cleanSym.includes('FINNIFTY')) lotSize = 25;
-                            else if (cleanSym.includes('MIDCPNIFTY')) lotSize = 50;
-                            else if (cleanSym.includes('SENSEX')) lotSize = 10;
-                            else if (cleanSym.includes('BANKEX')) lotSize = 15;
-                        }
-                    } catch (e) { console.warn(`[TradeService] Error fetching ${mType} lot size:`, e.message); }
-                }
-            }
-            else {
-                // Check CommodityLotService first for COMMODITY, COMEX, FOREX, CRYPTO lot sizes
-                const commodityLotService = require('./CommodityLotService');
-                const info = commodityLotService.getLotInfo(trade.symbol);
-                if (info && info.lot_size > 0) {
-                    lotSize = info.lot_size;
-                    console.log(`[TradeService] ${mType} Lot Size (from CommodityLotService): ${trade.symbol} → ${lotSize}`);
-                } else {
-                    try {
-                        const cleanSym = trade.symbol.includes(':') ? trade.symbol.split(':')[1] : trade.symbol;
-                        const [scripRows] = await connection.execute(
-                            'SELECT lot_size FROM scrip_data WHERE symbol = ? OR symbol = ?',
-                            [trade.symbol, cleanSym]
-                        );
-                        if (scripRows.length > 0 && parseFloat(scripRows[0].lot_size) > 0) {
-                            lotSize = parseFloat(scripRows[0].lot_size);
-                            console.log(`[TradeService] ${mType} Lot Size (from scrip_data): ${trade.symbol} → ${lotSize}`);
-                        } else {
-                            lotSize = 1;
-                        }
-                    } catch (e) {
-                        lotSize = 1;
-                    }
-                }
-            }
+            console.log(`[TradeService] Resolved Lot Size for ${trade.symbol} (${mType}): ${lotSize}`);
 
             // Determine exit price:
             // - If ADMIN/SUPERADMIN explicitly provided an exitPrice, honor it
@@ -312,6 +275,21 @@ class TradeService {
                         const cachedPrice = trade.type === 'BUY' ? cachedBidAsk.bid : cachedBidAsk.ask;
                         finalExitPrice = cachedPrice;
                         console.log(`[TradeService] ✅ Using cached bid/ask from ${cachedBidAsk.timestamp}: ${finalExitPrice} (Bid: ${cachedBidAsk.bid}, Ask: ${cachedBidAsk.ask})`);
+                    } else if (trade.last_market_price !== null && trade.last_market_price !== undefined && parseFloat(trade.last_market_price) > 0) {
+                        finalExitPrice = parseFloat(trade.last_market_price);
+                        console.log(`[TradeService] ✅ Using trade.last_market_price: ${finalExitPrice}`);
+                    } else {
+                        // Check scrip_data.last_price
+                        try {
+                            const cleanSym = trade.symbol.includes(':') ? trade.symbol.split(':')[1] : trade.symbol;
+                            const [scripRows] = await connection.execute('SELECT last_price FROM scrip_data WHERE symbol = ? OR symbol = ? LIMIT 1', [trade.symbol, cleanSym]);
+                            if (scripRows.length > 0 && parseFloat(scripRows[0].last_price) > 0) {
+                                finalExitPrice = parseFloat(scripRows[0].last_price);
+                                console.log(`[TradeService] ✅ Using scrip_data.last_price: ${finalExitPrice}`);
+                            }
+                        } catch (e) {
+                            console.warn('[TradeService] Error fetching scrip_data.last_price:', e.message);
+                        }
                     }
                 }
 
@@ -322,7 +300,7 @@ class TradeService {
                         console.log(`[TradeService] Live feeds unavailable, using provided exit price as fallback: ${finalExitPrice}`);
                     } else {
                         finalExitPrice = trade.entry_price;
-                        console.warn(`[TradeService] ⚠️ No live price or provided exit price, using Entry Price: ${finalExitPrice}`);
+                        console.warn(`[TradeService] ⚠️ No cached bid/ask and no live price, using Entry Price: ${finalExitPrice}`);
                     }
                 }
             }
@@ -480,10 +458,15 @@ class TradeService {
             // Determine closed_by: Store username if TRADER, role name if ADMIN/SUPERADMIN
             const closedByValue = (requesterRole !== 'TRADER') ? requesterRole : (requesterUsername || 'TRADER');
 
-            await connection.execute(
-                'UPDATE trades SET status = "CLOSED", exit_price = ?, exit_time = NOW(), pnl = ?, brokerage = ?, swap = ?, closed_by = ?, close_remark = ?, close_ip = ? WHERE id = ?',
+            // Tier 3 Atomic Conditional State Transition
+            const [updateResult] = await connection.execute(
+                'UPDATE trades SET status = "CLOSED", exit_price = ?, exit_time = NOW(), pnl = ?, brokerage = ?, swap = ?, closed_by = ?, close_remark = ?, close_ip = ? WHERE id = ? AND status IN ("OPEN", "HOLD")',
                 [finalExitPrice, pnl, brokerage, swap, closedByValue, remark, closeIp, tradeId]
             );
+
+            if (updateResult.affectedRows === 0) {
+                throw new Error('TRADE_ALREADY_CLOSED');
+            }
 
             await connection.execute(
                 'UPDATE users SET balance = balance + ? WHERE id = ?',
@@ -540,10 +523,15 @@ class TradeService {
 
             return { success: true, pnl, brokerage, swap, balanceChange };
         } catch (err) {
-            await connection.rollback();
+            if (connection) {
+                try { await connection.rollback(); } catch (_) {}
+            }
             throw err;
         } finally {
-            connection.release();
+            this.closingLocks.delete(tradeId);
+            if (connection) {
+                try { connection.release(); } catch (_) {}
+            }
         }
     }
 
@@ -558,55 +546,13 @@ class TradeService {
         }
         const clientConfig = JSON.parse(trade.config_json || '{}');
 
-        // Lot size calculation
-        if (mType === 'MCX') {
-            const { getMcxBaseScrip, MCX_LOT_SIZES } = require('../utils/symbolHelper');
-            const base = getMcxBaseScrip(trade.symbol);
-            const symTrimmed = (trade.symbol || '').toUpperCase().replace(/\d+.*/, '');
-
-            if (base && MCX_LOT_SIZES[base]) {
-                lotSize = MCX_LOT_SIZES[base];
-            } else if (MCX_LOT_SIZES[symTrimmed]) {
-                lotSize = MCX_LOT_SIZES[symTrimmed];
-            }
-        }
-        else if (mType === 'EQUITY' || mType === 'NSE' || mType === 'NFO' || mType === 'OPTIONS') {
-            lotSize = 1;
-            if (trade.lot_size_at_entry && parseFloat(trade.lot_size_at_entry) > 0) {
-                lotSize = parseFloat(trade.lot_size_at_entry);
-            } else if (trade.lot_size && parseFloat(trade.lot_size) > 0) {
-                lotSize = parseFloat(trade.lot_size);
-            } else if (mType !== 'EQUITY') {
-                try {
-                    const cleanSym = trade.symbol.includes(':') ? trade.symbol.split(':')[1] : trade.symbol;
-                    const [scripRows] = await connection.execute('SELECT lot_size FROM scrip_data WHERE symbol = ? OR symbol = ?', [trade.symbol, cleanSym]);
-                    if (scripRows.length > 0 && parseFloat(scripRows[0].lot_size) > 0) {
-                        lotSize = parseFloat(scripRows[0].lot_size);
-                    } else {
-                        if (cleanSym.includes('BANKNIFTY')) lotSize = 15;
-                        else if (cleanSym.includes('NIFTY')) lotSize = 25;
-                        else if (cleanSym.includes('FINNIFTY')) lotSize = 25;
-                        else if (cleanSym.includes('MIDCPNIFTY')) lotSize = 50;
-                        else if (cleanSym.includes('SENSEX')) lotSize = 10;
-                        else if (cleanSym.includes('BANKEX')) lotSize = 15;
-                    }
-                } catch (e) { console.warn(`[TradeService] Error fetching ${mType} lot size:`, e.message); }
-            }
-        }
-        else {
-            try {
-                const [scripRows] = await connection.execute(
-                    'SELECT lot_size FROM scrip_data WHERE symbol = ?',
-                    [trade.symbol]
-                );
-                if (scripRows.length > 0 && parseFloat(scripRows[0].lot_size) > 0) {
-                    lotSize = parseFloat(scripRows[0].lot_size);
-                } else {
-                    lotSize = 1;
-                }
-            } catch (e) {
-                lotSize = 1;
-            }
+        // Unified Lot size calculation
+        if (trade.lot_size_at_entry && parseFloat(trade.lot_size_at_entry) > 0) {
+            lotSize = parseFloat(trade.lot_size_at_entry);
+        } else if (trade.lot_size && parseFloat(trade.lot_size) > 0) {
+            lotSize = parseFloat(trade.lot_size);
+        } else {
+            lotSize = await getUniversalLotSize(trade.symbol, mType, connection);
         }
 
         let brokerage = 0;
@@ -663,6 +609,9 @@ class TradeService {
      */
     async executeNetting(userId, symbol, marketType, incomingTrade, connection) {
         console.log(`[executeNetting] Starting netting for user ${userId}, symbol ${symbol}, type ${incomingTrade.type}, qty ${incomingTrade.qty}`);
+
+        // 🔒 Row Lock to serialize netting calculations for user balance
+        await connection.execute('SELECT id, balance FROM users WHERE id = ? FOR UPDATE', [userId]);
 
         const { isSameInstrument } = require('../utils/symbolHelper');
         const oppositeType = incomingTrade.type === 'BUY' ? 'SELL' : 'BUY';

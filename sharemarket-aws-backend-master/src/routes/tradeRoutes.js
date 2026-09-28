@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { placeOrder, getTrades, getTradeById, getGroupTrades, getActivePositions, closeTrade, deleteTrade, updateTrade, restoreTrade, modifyPendingOrder, setTargetSL, completePendingOrder } = require('../controllers/tradeController');
 const { authMiddleware, roleMiddleware, brokerPermission } = require('../middleware/auth');
+const validateOrderRequest = require('../middleware/validateOrderRequest');
 
 router.get('/health', (req, res) => res.json({ status: 'OK', message: 'Trade routes active' }));
 router.get('/group', authMiddleware, getGroupTrades);
@@ -11,8 +12,8 @@ router.get('/closed', authMiddleware, getTrades);
 router.get('/', authMiddleware, getTrades);
 router.get('/:id', authMiddleware, getTradeById);
 
-router.post('/', authMiddleware, brokerPermission('tradeActivityAllowed'), placeOrder);
-router.post('/place', authMiddleware, brokerPermission('tradeActivityAllowed'), placeOrder);
+router.post('/', authMiddleware, brokerPermission('tradeActivityAllowed'), validateOrderRequest, placeOrder);
+router.post('/place', authMiddleware, brokerPermission('tradeActivityAllowed'), validateOrderRequest, placeOrder);
 
 router.put('/:id/close', authMiddleware, roleMiddleware(['SUPERADMIN', 'ADMIN', 'BROKER', 'TRADER']), closeTrade);
 router.put('/:id/target-sl', authMiddleware, setTargetSL);
