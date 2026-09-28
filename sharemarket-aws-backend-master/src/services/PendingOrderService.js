@@ -19,7 +19,7 @@ const monitorPendingOrders = async () => {
     try {
         // Fetch all trades that are OPEN and PENDING (is_pending = 1)
         const [pendingTrades] = await db.execute(
-            `SELECT t.id, t.user_id, t.symbol, t.type, t.entry_price, t.qty, t.market_type, t.last_market_price, u.username, u.balance 
+            `SELECT t.id, t.user_id, t.symbol, t.type, t.entry_price, t.qty, t.market_type, t.last_market_price, t.lot_size_at_entry, u.username, u.balance 
              FROM trades t 
              JOIN users u ON t.user_id = u.id 
              WHERE t.status = 'OPEN' AND t.is_pending = 1`
@@ -93,7 +93,7 @@ const monitorPendingOrders = async () => {
                 await db.execute('UPDATE trades SET last_market_price = ? WHERE id = ?', [currentPrice, trade.id]);
 
                 // Log execution
-                const lotSize = getLotSize(trade.symbol, trade.market_type);
+                const lotSize = parseFloat(trade.lot_size_at_entry) > 0 ? parseFloat(trade.lot_size_at_entry) : getLotSize(trade.symbol, trade.market_type);
                 const lotsVal = trade.qty / lotSize;
                 const matchedLog = buildTradeLog('LIMIT_MATCHED', {
                     username: trade.username,
