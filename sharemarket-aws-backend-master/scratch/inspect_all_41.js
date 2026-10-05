@@ -6,97 +6,75 @@ const FRONTEND_ROOT = path.resolve(__dirname, '../../Trading_Frontend-main');
 const WEBVIEW_ROOT = path.resolve(__dirname, '../../Trading_Webview-main');
 const APK_ROOT = path.resolve(__dirname, '../../trading-updated-apk-main');
 
-function fileContains(filePath, needle) {
-    if (!fs.existsSync(filePath)) return { exists: false, matches: [] };
+function searchInFile(filePath, regex) {
+    if (!fs.existsSync(filePath)) return [];
     const content = fs.readFileSync(filePath, 'utf8');
     const lines = content.split('\n');
-    const matches = [];
-    lines.forEach((line, idx) => {
-        if (typeof needle === 'string') {
-            if (line.includes(needle)) matches.push({ line: idx + 1, text: line.trim() });
-        } else if (needle instanceof RegExp) {
-            if (needle.test(line)) matches.push({ line: idx + 1, text: line.trim() });
+    const results = [];
+    lines.forEach((l, i) => {
+        if (regex.test(l)) {
+            results.push({ line: i + 1, text: l.trim() });
         }
     });
-    return { exists: true, matches, totalLines: lines.length };
+    return results;
 }
 
-console.log('=== VERIFYING AUDIT FINDINGS ===\n');
+console.log('=== DEEP VERIFICATION OF REMAINING AUDIT ITEMS ===');
 
-// SEC-001: Root AI routes
-const srv = fileContains(path.join(BACKEND_ROOT, 'src/server.js'), /app\.post\('\/(ai-parse|execute-command|smart-command|master-command)'/);
-console.log('SEC-001 Root AI routes in server.js:', srv.matches);
+// DB-001: trades.qty INT vs DECIMAL
+const migrateContent = fs.readFileSync(path.join(BACKEND_ROOT, 'src/config/migrate.js'), 'utf8');
+const tradesTableMatch = migrateContent.match(/CREATE TABLE IF NOT EXISTS trades \([\s\S]*?\);/);
+if (tradesTableMatch) {
+    const qtyLine = tradesTableMatch[0].split('\n').filter(l => l.includes('qty'));
+    console.log('\n[DB-001] trades table qty definition:', qtyLine);
+}
 
-// SEC-002: aiMediator raw SQL
-const mediator = fileContains(path.join(BACKEND_ROOT, 'src/services/aiMediator.js'), /db_write|db_read|db_transaction/);
-console.log('SEC-002 aiMediator tools:', mediator.matches.slice(0, 5));
+// DB-002: Indexes in migrate.js
+const addIndexLines = searchInFile(path.join(BACKEND_ROOT, 'src/config/migrate.js'), /addIndex/);
+console.log('\n[DB-002] addIndex calls:', addIndexLines.slice(0, 15));
 
-// SEC-003: getUsers SELECT u.*
-const usersCtrl = fileContains(path.join(BACKEND_ROOT, 'src/controllers/userController.js'), /SELECT\s+u\.\*/i);
-console.log('SEC-003 getUsers SELECT u.*:', usersCtrl.matches);
+// PERF-001: getUsers pagination & correlated subqueries
+const getUsersContent = fs.readFileSync(path.join(BACKEND_ROOT, 'src/controllers/userController.js'), 'utf8');
+console.log('\n[PERF-001] getUsers has LIMIT / OFFSET pagination:', /LIMIT|OFFSET/i.test(getUsersContent.slice(0, 3000)));
 
-// SEC-004: updatePasswords / resetPassword
-const userRoutes = fileContains(path.join(BACKEND_ROOT, 'src/routes/userRoutes.js'), /:id\/passwords|:id\/reset-password/);
-console.log('SEC-004 userRoutes password routes:', userRoutes.matches);
+// PERF-002: Polling intervals in server.js
+const pollIntervals = searchInFile(path.join(BACKEND_ROOT, 'src/server.js'), /rmsService\.start|startTargetSLMonitoring|startAlertMonitoring|startPendingOrderMonitoring/);
+console.log('\n[PERF-002] Polling services in server.js:', pollIntervals);
 
-// SEC-005: updateUser / settings / documents
-const userPerms = fileContains(path.join(BACKEND_ROOT, 'src/routes/userRoutes.js'), /:id'|:id\/settings|:id\/documents/);
-console.log('SEC-005 userRoutes client settings/docs:', userPerms.matches);
+// ERR-001: Error leakage err.message
+const errLeaks = searchInFile(path.join(BACKEND_ROOT, 'src/controllers/tradeController.js'), /res\.status\(\d+\)\.json\(\{[\s\S]*?error:\s*err\.message/);
+console.log('\n[ERR-001] tradeController err.message leakage count:', errLeaks.length, errLeaks.slice(0, 3));
 
-// SEC-006: SQL injection in user-list date filter
-const sqlInj = fileContains(path.join(BACKEND_ROOT, 'src/controllers/userController.js'), /tradeDateFilter \+=/);
-console.log('SEC-006 tradeDateFilter injection:', sqlInj.matches);
+// DASH-001: Silent stale-price fallback
+const stalePriceRMS = searchInFile(path.join(BACKEND_ROOT, 'src/services/RMSService.js'), /entry_price|last_market_price/);
+console.log('\n[DASH-001] RMSService price fallback:', stalePriceRMS.slice(0, 5));
 
-// SEC-007: Path traversal getAudio
-const audioTraverse = fileContains(path.join(BACKEND_ROOT, 'src/controllers/voiceRecordingController.js'), /path\.join\(__dirname, '\.\.\/uploads\/recordings', filename\)/);
-console.log('SEC-007 audio path traversal:', audioTraverse.matches);
+// FE-001: Frontend token storage & dist.zip / .env
+const feEnvExists = fs.existsSync(path.join(FRONTEND_ROOT, '.env'));
+const feDistZip = fs.existsSync(path.join(FRONTEND_ROOT, 'dist.zip'));
+const feLocalStorage = searchInFile(path.join(FRONTEND_ROOT, 'src/context/AuthContext.jsx'), /localStorage\.setItem\('token'/);
+console.log('\n[FE-001] Frontend .env exists:', feEnvExists, 'dist.zip exists:', feDistZip, 'localStorage token:', feLocalStorage);
 
-// SEC-008: Kite session control
-const kiteCtrl = fileContains(path.join(BACKEND_ROOT, 'src/routes/kiteRoutes.js'), /router\.post\('\/(set-token|disconnect|auto-login)'/);
-console.log('SEC-008 kiteRoutes control endpoints:', kiteCtrl.matches);
+// APK-001: Mobile permissions in app.json & client-sent prices
+const apkAppJson = path.join(APK_ROOT, 'app.json');
+let apkPerms = [];
+if (fs.existsSync(apkAppJson)) {
+    const appJsonObj = JSON.parse(fs.readFileSync(apkAppJson, 'utf8'));
+    apkPerms = appJsonObj.expo?.android?.permissions || [];
+}
+console.log('\n[APK-001] APK Android permissions:', apkPerms);
 
-// SEC-009: kite_session.json & TOTP log
-const kiteJsonExists = fs.existsSync(path.join(BACKEND_ROOT, 'src/data/kite_session.json'));
-const totpLog = fileContains(path.join(BACKEND_ROOT, 'src/services/KiteAutoLoginService.js'), /Generated 6-digit TOTP code/);
-console.log('SEC-009 kite_session.json exists:', kiteJsonExists, 'TOTP log:', totpLog.matches);
+// REL-004: Backup / monitoring / CI
+const gitWorkflowDir = path.join(path.resolve(__dirname, '../../'), '.github');
+console.log('\n[REL-004] .github exists:', fs.existsSync(gitWorkflowDir));
 
-// FIN-001: Execution price client chosen in placeOrder
-const placeOrderPrice = fileContains(path.join(BACKEND_ROOT, 'src/controllers/tradeController.js'), /executionPrice/);
-console.log('FIN-001 tradeController executionPrice:', placeOrderPrice.matches.slice(0, 5));
+// CQ-001: tradeController line count & recalculateBrokerage market_type
+const tcLines = fs.readFileSync(path.join(BACKEND_ROOT, 'src/controllers/tradeController.js'), 'utf8').split('\n').length;
+const krLines = fs.readFileSync(path.join(BACKEND_ROOT, 'src/routes/kiteRoutes.js'), 'utf8').split('\n').length;
+const recalcBrokerage = searchInFile(path.join(BACKEND_ROOT, 'src/controllers/userController.js'), /calculateTradeBrokerage/);
+console.log('\n[CQ-001] tradeController lines:', tcLines, 'kiteRoutes lines:', krLines, 'recalcBrokerage:', recalcBrokerage);
 
-// FIN-002: Client sets PnL on close
-const closePnl = fileContains(path.join(BACKEND_ROOT, 'src/services/TradeService.js'), /providedPnl|pnl/);
-console.log('FIN-002 TradeService closeTrade providedPnl:', closePnl.matches.filter(m => m.text.includes('provided') || m.text.includes('pnl') && m.text.includes('body')).slice(0, 5));
-
-// FIN-003: internalTransfer
-const transfer = fileContains(path.join(BACKEND_ROOT, 'src/controllers/portfolioController.js'), /internalTransfer/);
-console.log('FIN-003 portfolioController internalTransfer:', transfer.matches);
-
-// CON-001 & Bug #8: Trade close race condition & mutex
-const closeMutex = fileContains(path.join(BACKEND_ROOT, 'src/services/TradeService.js'), /closingLocks|FOR UPDATE/);
-console.log('CON-001 / Bug #8 closeTrade mutex/FOR UPDATE:', closeMutex.matches);
-
-// SEC-010: Socket.IO auth
-const socketInit = fileContains(path.join(BACKEND_ROOT, 'src/websocket/SocketManager.js'), /socket\.on\('join'/);
-console.log('SEC-010 Socket.IO join:', socketInit.matches);
-
-// SEC-011: Rate limiting
-const rateLimit = fileContains(path.join(BACKEND_ROOT, 'src/server.js'), /rate-limit|rateLimit/);
-console.log('SEC-011 express-rate-limit in server.js:', rateLimit.matches);
-
-// SEC-012: Token in query string
-const queryToken = fileContains(path.join(BACKEND_ROOT, 'src/middleware/auth.js'), /req\.query\?\.token/);
-console.log('SEC-012 token in req.query:', queryToken.matches);
-
-// SEC-013: Unprotected admin endpoints
-const debugRoute = fileContains(path.join(BACKEND_ROOT, 'src/routes/systemRoutes.js'), /refresh-market-data|cleanup/);
-console.log('SEC-013 systemRoutes debug/refresh:', debugRoute.matches);
-
-// FIN-006: Weekly settlement absolute balance
-const weeklySettlement = fileContains(path.join(BACKEND_ROOT, 'src/services/WeeklySettlementService.js'), /UPDATE users SET balance =/);
-console.log('FIN-006 WeeklySettlementService balance update:', weeklySettlement.matches);
-
-// CQ-001: Controller sizes
-const tcStats = fs.statSync(path.join(BACKEND_ROOT, 'src/controllers/tradeController.js'));
-const krStats = fs.statSync(path.join(BACKEND_ROOT, 'src/routes/kiteRoutes.js'));
-console.log('CQ-001 tradeController size:', tcStats.size, 'kiteRoutes size:', krStats.size);
+// CQ-002: Duplicated lot size tables
+const mcxLotsKite = searchInFile(path.join(BACKEND_ROOT, 'src/controllers/kiteController.js'), /MCX_LOT_SIZES/);
+const mcxLotsSymbolHelper = searchInFile(path.join(BACKEND_ROOT, 'src/utils/symbolHelper.js'), /DEFAULT_LOT_SIZES|MCX_LOT_SIZES/);
+console.log('\n[CQ-002] MCX_LOT_SIZES in kiteController:', mcxLotsKite, 'in symbolHelper:', mcxLotsSymbolHelper);
